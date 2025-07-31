@@ -1,7 +1,7 @@
 'use client';
 import { ResponsiveDialog } from "@/components/responsive-dialog";
 import { MeetingForm } from "./meetings-form";
-import router from "next/router";
+import { useRouter } from "next/navigation";
 
 
 
@@ -15,6 +15,7 @@ export const NewMeetingDialog=({
     open,
     onOpenChange,
 }:NewMeetingDialogProps) => {
+    const router = useRouter();
    return (
     <ResponsiveDialog
      title="New Meeting"
