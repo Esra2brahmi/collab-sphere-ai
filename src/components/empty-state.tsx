@@ -3,6 +3,7 @@ import { ReactNode } from "react";
 interface EmptyStateProps {
   title: string;
   description: string;
+  image?:string;
   icon?: ReactNode;
   action?: ReactNode;
 }
@@ -10,13 +11,14 @@ interface EmptyStateProps {
 export const EmptyState = ({
   title,
   description,
+  image="/empty.svg",
   icon,
   action,
 }: EmptyStateProps) => {
   return (
     <div className="flex h-[450px] shrink-0 items-center justify-center rounded-md border border-dashed">
       <div className="mx-auto flex max-w-[420px] flex-col items-center justify-center text-center">
-        {icon && <div className="flex h-20 w-20 items-center justify-center rounded-full bg-muted">{icon}</div>}
+        {icon && <div className="flex h-20 w-20 items-center justify-center rounded-full bg-muted">{image}</div>}
         <h3 className="mt-4 text-lg font-semibold">{title}</h3>
         <p className="mb-4 mt-2 text-sm text-muted-foreground">{description}</p>
         {action && <div className="mt-4">{action}</div>}
