@@ -83,15 +83,9 @@ export async function POST(req:NextRequest){
     }
 
     const call=streamVideo.video.call("default",meetingId);
-    const realtimeClient = await streamVideo.video.connectOpenAi({
-        call,
-        openAiApiKey:process.env.OPENAI_API_KEY!,
-        agentUserId:existingAgent.id,
-    });
-
-    realtimeClient.updateSession({
-        instructions:existingAgent.instructions,
-    });
+    
+    console.log(`[Meeting] Started meeting ${meetingId} with agent ${existingAgent.id}`);
+    console.log(`[Agent] Using browser-based speech recognition + Groq API instead of OpenAI realtime`);
 }else if (eventType === "call.session_participant_left"){
     const event = payload as CallSessionParticipantLeftEvent;
     const meetingId = event.call_cid.split(":")[1];

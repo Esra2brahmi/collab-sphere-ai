@@ -10,6 +10,7 @@ import { CallUI } from "./call-ui";
 interface Props {
     meetingId:string;
     meetingName:string;
+    agentId:string;
     userId:string;
     userName:string;
     userImage:string;
@@ -18,6 +19,7 @@ interface Props {
 export const CallConnect = ({
    meetingId,
    meetingName,
+   agentId,
    userId,
    userName,
    userImage,
@@ -77,7 +79,7 @@ export const CallConnect = ({
     return (
         <StreamVideo client={client}>
             <StreamCall call={call}>
-                <CallUI meetingName={meetingName}/> 
+                <CallUI meetingName={meetingName} agentId={agentId}/> 
             </StreamCall>
             <div>Call connect</div>
         </StreamVideo>

@@ -22,9 +22,16 @@ const Page = async ({params}:Props) => {
 
     const {meetingId} = await params;
     const queryClient = getQueryClient();
-    void queryClient.prefetchQuery(
-        trpc.meetings.getOne.queryOptions({id:meetingId}),
-    );
+    
+    // Try to prefetch the meeting data, but don't fail if unauthorized during SSR
+    try {
+        void queryClient.prefetchQuery(
+            trpc.meetings.getOne.queryOptions({id:meetingId}),
+        );
+    } catch (error) {
+        console.warn('Failed to prefetch meeting data during SSR:', error);
+        // Continue without prefetched data - it will be fetched on the client
+    }
 
     return (
         <HydrationBoundary state={dehydrate(queryClient)}>
