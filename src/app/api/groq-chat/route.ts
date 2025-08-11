@@ -37,7 +37,15 @@ export async function POST(req: NextRequest) {
             messages: [
                 {
                     role: "system",
-                    content: agent.instructions || "You are a helpful assistant in a video call. Respond naturally and conversationally."
+                    content: (
+                        (agent.instructions || "You are a helpful assistant in a video call.") +
+                        "\nStyle rules:" +
+                        "\n- Be concise and straight to the point (1–3 short sentences unless explicitly asked to elaborate)." +
+                        "\n- Use simple, human, natural language. Avoid robotic phrasing and filler." +
+                        "\n- Prefer actionable answers with clear steps or a direct reply." +
+                        "\n- If you need to list items, keep lists short (max 3 bullets)." +
+                        "\n- Ask a brief follow-up only when necessary."
+                    )
                 },
                 {
                     role: "user",
@@ -45,8 +53,11 @@ export async function POST(req: NextRequest) {
                 }
             ],
             model: "llama3-8b-8192", // Free Groq model
-            temperature: 0.5,
-            max_tokens: 800,
+            temperature: 0.3,
+            max_tokens: 240,
+            top_p: 0.9,
+            presence_penalty: 0.1,
+            frequency_penalty: 0.2,
         });
 
         const response = completion.choices[0]?.message?.content || "I'm sorry, I didn't understand that.";

@@ -69,13 +69,20 @@ export const meetingsRouter=createTRPCRouter({
             return updatedMeeting;
         }),
     create: protectedProcedure.input(meetingsInsertSchema).mutation(async({input,ctx})=>{
+            console.log('[Meeting Creation] Starting creation with input:', input);
+            console.log('[Meeting Creation] User ID:', ctx.auth.user.id);
+
             const [createdMeeting]=await db
             .insert(meetings)
             .values({
                 ...input,
                 userId:ctx.auth.user.id,
+                status: "active", // Set to active so it appears on home page immediately
             })
             .returning();
+
+            console.log('[Meeting Creation] Created meeting:', createdMeeting);
+
             const call = streamVideo.video.call("default",createdMeeting.id);
             await call.create({
                 data:{
@@ -93,17 +100,37 @@ export const meetingsRouter=createTRPCRouter({
                         recording:{
                             mode:"auto-on",
                             quality:"1080p",
-                        }
+                        },
+                        // Multi-participant settings
+                        audio: {
+                            mic_default_on: false, // Mics off by default for new participants
+                            speaker_default_on: true,
+                            default_device: "speaker", // Default audio output device
+                        },
+                        video: {
+                            camera_default_on: false, // Cameras off by default
+                            target_resolution: {
+                                width: 640,  // Minimum 240, using 640 for better quality
+                                height: 480, // Minimum 240, using 480 for better quality
+                                bitrate: 500000, // 500 kbps bitrate
+                            },
+                        },
                     }
                 },
             })
-            
+
+            console.log('[Meeting Creation] Stream call created successfully');
+
             const [existingAgent]=await db 
                .select()
                .from(agents)
                .where(eq(agents.id,createdMeeting.agentId));
             
+            console.log('[Meeting Creation] Agent lookup result:', existingAgent);
+            console.log('[Meeting Creation] Agent ID from meeting:', createdMeeting.agentId);
+            
             if(!existingAgent){
+                console.log('[Meeting Creation] ERROR: Agent not found!');
                 throw new TRPCError({
                     code:"NOT_FOUND",
                     message:"Agent not found",
@@ -122,30 +149,100 @@ export const meetingsRouter=createTRPCRouter({
                 }
             ]);
 
+            console.log('[Meeting Creation] Meeting creation completed successfully');
             return createdMeeting;
         }),
     getOne: protectedProcedure.input(z.object({id:z.string()})).query(async({input,ctx})=>{
-        const [existingMeeting]=await db
+            console.log('[Meeting GetOne] Looking for meeting ID:', input.id);
+            console.log('[Meeting GetOne] User ID:', ctx.auth.user.id);
+
+            // First, let's check if the meeting exists without any joins
+            const [rawMeeting] = await db
+                .select()
+                .from(meetings)
+                .where(eq(meetings.id, input.id));
+            
+            console.log('[Meeting GetOne] Raw meeting (no joins):', rawMeeting);
+
+            if (!rawMeeting) {
+                console.log('[Meeting GetOne] Meeting does not exist at all');
+                throw new TRPCError({
+                    code:"NOT_FOUND",
+                    message:"Meeting not found",
+                });
+            }
+
+            // Now let's check if the agent exists
+            const [rawAgent] = await db
+                .select()
+                .from(agents)
+                .where(eq(agents.id, rawMeeting.agentId));
+            
+            console.log('[Meeting GetOne] Raw agent:', rawAgent);
+            console.log('[Meeting GetOne] Agent ID from meeting:', rawMeeting.agentId);
+
+            const [existingMeeting]=await db
            .select({
             ...getTableColumns(meetings),
             agent:agents,
             duration: sql<number>`EXTRACT(EPOCH FROM (ended_at - started_at))`.as("duration"),
            })
            .from(meetings)
-           .innerJoin(agents,eq(meetings.agentId,agents.id))
+           .leftJoin(agents,eq(meetings.agentId,agents.id))
            .where(
-            and (
-                (eq(meetings.id,input.id)),
-                eq(meetings.userId, ctx.auth.user.id),
-        ));
+            eq(meetings.id,input.id)
+        );
+
+            console.log('[Meeting GetOne] Query result:', existingMeeting);
+
+            // Now check access control
+            if (existingMeeting) {
+                const canAccess = existingMeeting.userId === ctx.auth.user.id || 
+                                 existingMeeting.status === MeetingStatus.Active || 
+                                 existingMeeting.status === MeetingStatus.Upcoming;
+                
+                console.log('[Meeting GetOne] Access check:', {
+                    isOwner: existingMeeting.userId === ctx.auth.user.id,
+                    isActive: existingMeeting.status === MeetingStatus.Active,
+                    isUpcoming: existingMeeting.status === MeetingStatus.Upcoming,
+                    canAccess
+                });
+                
+                if (!canAccess) {
+                    console.log('[Meeting GetOne] Access denied');
+                    throw new TRPCError({
+                        code:"FORBIDDEN",
+                        message:"Access denied to this meeting",
+                    });
+                }
+            }
 
         if(!existingMeeting){
+            console.log('[Meeting GetOne] Meeting not found - checking if it exists at all...');
+            
+            // Let's check if the meeting exists at all (without restrictions)
+            const [anyMeeting] = await db
+                .select()
+                .from(meetings)
+                .where(eq(meetings.id, input.id));
+            
+            console.log('[Meeting GetOne] Meeting exists in DB:', !!anyMeeting);
+            if (anyMeeting) {
+                console.log('[Meeting GetOne] Meeting details:', {
+                    id: anyMeeting.id,
+                    status: anyMeeting.status,
+                    userId: anyMeeting.userId,
+                    currentUserId: ctx.auth.user.id
+                });
+            }
+
             throw new TRPCError({
                 code:"NOT_FOUND",
                 message:"Meeting not found",
             });
         }
 
+            console.log('[Meeting GetOne] Meeting found successfully');
         return existingMeeting;
     }),
     getMany: protectedProcedure
@@ -199,5 +296,50 @@ export const meetingsRouter=createTRPCRouter({
            };
 
       
+    }),
+    // Get all active meetings that any user can join (for multi-participant support)
+    getActiveMeetings: protectedProcedure
+        .input(z.object({
+            page: z.number().default(DEFAULT_PAGE),
+            pageSize: z.number().min(MIN_PAGE_SIZE).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
+            search: z.string().nullish(),
+        }))
+        .query(async({ctx,input})=>{
+        const {search ,page, pageSize}=input;
+        const data=await db
+           .select({
+            ...getTableColumns(meetings),
+            agent : agents,
+            duration: sql<number>`EXTRACT(EPOCH FROM (ended_at - started_at))`.as("duration"),
+           })
+           .from(meetings)
+           .innerJoin(agents, eq(meetings.agentId, agents.id))
+           .where(
+            and(
+                // Show active and upcoming meetings that anyone can join
+                (eq(meetings.status, MeetingStatus.Active) || eq(meetings.status, MeetingStatus.Upcoming)),
+                search ? ilike(meetings.name, `%${search}%`) : undefined, 
+            )
+           )
+           .orderBy(desc(meetings.createdAt),desc(meetings.id))
+           .limit(pageSize)
+           .offset((page-1)*pageSize)
+
+           const [total]= await db
+           .select({count:count()})
+           .from(meetings)
+           .where(
+            and(
+                (eq(meetings.status, MeetingStatus.Active) || eq(meetings.status, MeetingStatus.Upcoming)),
+                search ? ilike(meetings.name, `%${search}%`) : undefined,
+            )
+           );
+           const totalPages=Math.ceil(total.count/pageSize);
+
+           return {
+            items: data,
+            total: total.count,
+            totalPages,
+           };
     }),
 });
