@@ -6,6 +6,7 @@ import { CustomSpeakerLayout } from "./custom-speaker-layout";
 
 interface Props {
     onLeave: () => void;
+    meetingId: string;
     meetingName: string;
     agentId?: string;
 }
@@ -35,7 +36,7 @@ declare global {
     }
 }
 
-export const CallActive = ({ onLeave, meetingName, agentId }: Props) => {
+export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) => {
     const { useParticipants } = useCallStateHooks();
     const participants = useParticipants();
     const call = useCall();
@@ -54,6 +55,7 @@ export const CallActive = ({ onLeave, meetingName, agentId }: Props) => {
     const greetedRef = useRef(false);
     const lastMicStateRef = useRef<boolean | null>(null);
     const lastQuestionRef = useRef<string>("");
+    const conversationLogRef = useRef<string[]>([]);
 
     const forceStopTTS = () => {
         try {
@@ -227,6 +229,8 @@ export const CallActive = ({ onLeave, meetingName, agentId }: Props) => {
         // Store the question for later response
         lastQuestionRef.current = message;
         setWaitingForQuestion(false);
+        // Append to conversation log
+        conversationLogRef.current.push(`User: ${message}`);
         
         // Don't respond immediately - wait for manual trigger
         console.log(`[User asked]: ${message}`);
@@ -270,6 +274,10 @@ export const CallActive = ({ onLeave, meetingName, agentId }: Props) => {
     const speakResponse = (text: string) => {
         if (!('speechSynthesis' in window) || isAIMuted) return;
         if (isShuttingDownRef.current) return;
+        // Append to conversation log
+        if (text?.trim()) {
+            conversationLogRef.current.push(`AI: ${text}`);
+        }
         if (isAgentSpeaking) {
             console.log('[TTS] Already speaking, stopping current speech first');
             forceStopTTS();
@@ -519,13 +527,26 @@ export const CallActive = ({ onLeave, meetingName, agentId }: Props) => {
     };
 
     // Stop TTS/STT immediately and then delegate to parent leave
-    const handleLeaveAndStopAudio = () => {
+    const handleLeaveAndStopAudio = async () => {
         ttsStopRequestedRef.current = true;
         isShuttingDownRef.current = true;
         forceStopTTS();
         try { recognitionRef.current?.abort(); } catch (_) {}
         setIsListening(false);
         setIsAgentSpeaking(false);
+        // Send conversation for summary and mark meeting completed
+        try {
+            await fetch('/api/meeting-complete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    meetingId,
+                    conversation: conversationLogRef.current.join('\n')
+                }),
+            });
+        } catch (e) {
+            console.error('Failed to finalize meeting:', e);
+        }
         onLeave();
     };
 

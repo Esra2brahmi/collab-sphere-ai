@@ -7,12 +7,13 @@ import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-q
 import { MeetingIdViewHeader } from "../components/meeting-id-view-header";
 import { useRouter } from "next/navigation";
 import { useConfirm } from "@/hooks/use-confirm";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { UpdateMeetingDialog } from "../components/update-meeting-dialog";
 import { UpcomingState } from "../components/upcoming-state";
 import { ActiveState } from "../components/active-state";
 import { CancelledState } from "../components/cancelled-state";
 import { ProcessingState } from "../components/processing-state";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 
 interface Props {
@@ -52,6 +53,16 @@ export const MeetingIdView = ({meetingId} : Props)=>{
     const isCompleted = data.status ==="completed"
     const isProcessing = data.status ==="processing";
 
+    // Auto-refresh when processing until summary is available
+    useEffect(() => {
+        if (!isProcessing) return;
+        const id = setInterval(() => {
+            const q = trpc.meetings.getOne.queryOptions({ id: meetingId }).queryKey;
+            queryClient.invalidateQueries({ queryKey: q });
+        }, 4000);
+        return () => clearInterval(id);
+    }, [isProcessing, queryClient, trpc.meetings.getOne, meetingId]);
+
 
     return (
         <>
@@ -69,8 +80,42 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                onRemove={handleRemoveMeeting}
                />
               {isCancelled && <CancelledState/>}
-              {isProcessing && <ProcessingState/>}
-              {isCompleted && <div>Completed</div>}
+              {isProcessing && (
+                <Tabs defaultValue="overview">
+                    <TabsList>
+                        <TabsTrigger value="overview">Overview</TabsTrigger>
+                        <TabsTrigger value="summary">Summary</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="overview">
+                        <ProcessingState/>
+                    </TabsContent>
+                    <TabsContent value="summary">
+                        <div className="rounded-lg border p-4 text-sm">
+                          Summary is being generated. Please check back shortly.
+                        </div>
+                    </TabsContent>
+                </Tabs>
+              )}
+              {isCompleted && (
+                <Tabs defaultValue={data.summary ? "summary" : "overview"}>
+                    <TabsList>
+                        <TabsTrigger value="overview">Overview</TabsTrigger>
+                        <TabsTrigger value="summary">Summary</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="overview">
+                        <div className="rounded-lg border p-4 text-sm">This meeting has been completed.</div>
+                    </TabsContent>
+                    <TabsContent value="summary">
+                        {data.summary ? (
+                          <div className="rounded-lg border p-4 whitespace-pre-wrap text-sm">
+                            {data.summary}
+                          </div>
+                        ) : (
+                          <div className="rounded-lg border p-4 text-sm">No summary available.</div>
+                        )}
+                    </TabsContent>
+                </Tabs>
+              )}
               {isActive && <ActiveState meetingId={meetingId}/>}
               {isUpcoming && (<UpcomingState
                     meetingId={meetingId}

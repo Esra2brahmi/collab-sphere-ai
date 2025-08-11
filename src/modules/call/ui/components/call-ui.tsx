@@ -5,11 +5,12 @@ import { CallActive } from "./call-active";
 import { CallEnded } from "./call-ended";
 
 interface Props {
-    meetingName:string;
-    agentId:string;
+    meetingId: string;
+    meetingName: string;
+    agentId: string;
 };
 
-export const CallUI=({meetingName,agentId}:Props)=>{
+export const CallUI=({meetingId, meetingName, agentId}:Props)=>{
     const call=useCall();
     const { useCallCallingState } = useCallStateHooks();
     const callingState = useCallCallingState();
@@ -44,7 +45,7 @@ export const CallUI=({meetingName,agentId}:Props)=>{
         setShow("call"); 
     };
 
-    const handleLeave=() => {
+    const handleLeave= async () => {
         if(!call) return;
         console.log('[CallUI] User leaving call...');
         try { window.speechSynthesis?.cancel(); } catch (_) {}
@@ -55,7 +56,7 @@ export const CallUI=({meetingName,agentId}:Props)=>{
     return (
         <StreamTheme className="h-full">
             {show === "lobby" && <CallLobby onJoin={handleJoin}/>}
-            {show === "call" && <CallActive onLeave={handleLeave} meetingName={meetingName} agentId={agentId}/>}
+            {show === "call" && <CallActive onLeave={handleLeave} meetingId={meetingId} meetingName={meetingName} agentId={agentId}/>}
             {show === "ended" && <CallEnded/>}
         </StreamTheme>
     )
