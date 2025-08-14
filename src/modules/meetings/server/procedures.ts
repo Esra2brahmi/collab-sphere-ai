@@ -1,9 +1,9 @@
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import {db} from "@/db";
-import {agents, meetings } from "@/db/schema";
+import {agents, meetings, meetingParticipants } from "@/db/schema";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
-import { and, count, desc,eq, getTableColumns, ilike, sql } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, ilike, or, sql } from "drizzle-orm";
 import { DEFAULT_PAGE, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE } from "@/constants";
 import { meetingsInsertSchema, meetingsUpdateSchema } from "../schemas";
 import { MeetingStatus } from "../types";
@@ -195,19 +195,32 @@ export const meetingsRouter=createTRPCRouter({
 
             console.log('[Meeting GetOne] Query result:', existingMeeting);
 
-            // Now check access control
+            // Now check access control (owner, active/upcoming, or participant)
             if (existingMeeting) {
-                const canAccess = existingMeeting.userId === ctx.auth.user.id || 
-                                 existingMeeting.status === MeetingStatus.Active || 
-                                 existingMeeting.status === MeetingStatus.Upcoming;
-                
+                // Check if current user is a participant of this meeting
+                const [participant] = await db
+                  .select()
+                  .from(meetingParticipants)
+                  .where(
+                    and(
+                      eq(meetingParticipants.meetingId, existingMeeting.id),
+                      eq(meetingParticipants.userId, ctx.auth.user.id),
+                    ),
+                  );
+
+                const isOwner = existingMeeting.userId === ctx.auth.user.id;
+                const isOpen = existingMeeting.status === MeetingStatus.Active || existingMeeting.status === MeetingStatus.Upcoming;
+                const isParticipant = Boolean(participant);
+                const canAccess = isOwner || isOpen || isParticipant;
+
                 console.log('[Meeting GetOne] Access check:', {
-                    isOwner: existingMeeting.userId === ctx.auth.user.id,
+                    isOwner,
                     isActive: existingMeeting.status === MeetingStatus.Active,
                     isUpcoming: existingMeeting.status === MeetingStatus.Upcoming,
-                    canAccess
+                    isParticipant,
+                    canAccess,
                 });
-                
+
                 if (!canAccess) {
                     console.log('[Meeting GetOne] Access denied');
                     throw new TRPCError({
@@ -265,7 +278,12 @@ export const meetingsRouter=createTRPCRouter({
            .innerJoin(agents, eq(meetings.agentId, agents.id))
            .where(
             and(
-                eq(meetings.userId, ctx.auth.user.id),
+                // Owner or participant
+                or(
+                    eq(meetings.userId, ctx.auth.user.id),
+                    // EXISTS subquery to check participation
+                    sql`EXISTS (SELECT 1 FROM meeting_participants mp WHERE mp.meeting_id = ${meetings.id} AND mp.user_id = ${ctx.auth.user.id})`,
+                ),
                 search ? ilike(meetings.name, `%${search}%`) : undefined, 
                 status ? eq(meetings.status, status) : undefined,
                 agentId ? eq(meetings.agentId, agentId) : undefined, 
@@ -280,7 +298,10 @@ export const meetingsRouter=createTRPCRouter({
            .from(meetings)
            .where(
             and(
-                eq(meetings.userId, ctx.auth.user.id),
+                or(
+                    eq(meetings.userId, ctx.auth.user.id),
+                    sql`EXISTS (SELECT 1 FROM meeting_participants mp WHERE mp.meeting_id = ${meetings.id} AND mp.user_id = ${ctx.auth.user.id})`,
+                ),
                 search ? ilike(meetings.name, `%${search}%`) : undefined,
                 status ? eq(meetings.status, status) : undefined,
                 agentId ? eq(meetings.agentId, agentId) : undefined,
@@ -342,4 +363,44 @@ export const meetingsRouter=createTRPCRouter({
             totalPages,
            };
     }),
+    // Register current user as a participant of a meeting
+    join: protectedProcedure
+        .input(z.object({ meetingId: z.string(), role: z.string().nullish() }))
+        .mutation(async ({ ctx, input }) => {
+            const userId = ctx.auth.user.id;
+            // Check if record exists
+            const [existing] = await db
+              .select()
+              .from(meetingParticipants)
+              .where(and(eq(meetingParticipants.meetingId, input.meetingId), eq(meetingParticipants.userId, userId)));
+
+            if (existing) {
+                // Update timestamps/role if needed
+                const [updated] = await db
+                  .update(meetingParticipants)
+                  .set({ updatedAt: new Date(), leftAt: null, role: input.role ?? existing.role })
+                  .where(and(eq(meetingParticipants.meetingId, input.meetingId), eq(meetingParticipants.userId, userId)))
+                  .returning();
+                return updated;
+            }
+
+            const [created] = await db
+              .insert(meetingParticipants)
+              .values({ meetingId: input.meetingId, userId, role: input.role ?? "attendee" })
+              .returning();
+            return created;
+        }),
+
+    // Mark current user as left from a meeting
+    leave: protectedProcedure
+        .input(z.object({ meetingId: z.string() }))
+        .mutation(async ({ ctx, input }) => {
+            const userId = ctx.auth.user.id;
+            const [updated] = await db
+              .update(meetingParticipants)
+              .set({ leftAt: new Date(), updatedAt: new Date() })
+              .where(and(eq(meetingParticipants.meetingId, input.meetingId), eq(meetingParticipants.userId, userId)))
+              .returning();
+            return updated ?? null;
+        }),
 });

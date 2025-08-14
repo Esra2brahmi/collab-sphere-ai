@@ -1,5 +1,7 @@
 import { StreamTheme, useCall, useCallStateHooks, CallingState } from "@stream-io/video-react-sdk";
 import { useState, useEffect } from "react";
+import { useTRPC } from "@/trpc/client";
+import { useMutation } from "@tanstack/react-query";
 import { CallLobby } from "./call-lobby";
 import { CallActive } from "./call-active";
 import { CallEnded } from "./call-ended";
@@ -15,6 +17,9 @@ export const CallUI=({meetingId, meetingName, agentId}:Props)=>{
     const { useCallCallingState } = useCallStateHooks();
     const callingState = useCallCallingState();
     const [show,setShow]=useState<"lobby" | "call" | "ended" >("lobby");
+    const trpc = useTRPC();
+    const { mutateAsync: joinMeeting } = useMutation(trpc.meetings.join.mutationOptions());
+    const { mutateAsync: leaveMeeting } = useMutation(trpc.meetings.leave.mutationOptions());
 
     // Monitor call state changes to handle when call ends
     useEffect(() => {
@@ -41,6 +46,12 @@ export const CallUI=({meetingId, meetingName, agentId}:Props)=>{
 
     const handleJoin = async () => {
         if (!call) return;
+        // record participant before joining UI
+        try {
+            await joinMeeting({ meetingId, role: "attendee" });
+        } catch (e) {
+            console.warn("[CallUI] Failed to record participant join:", e);
+        }
         await call.join();
         setShow("call"); 
     };
@@ -51,6 +62,12 @@ export const CallUI=({meetingId, meetingName, agentId}:Props)=>{
         try { window.speechSynthesis?.cancel(); } catch (_) {}
         // Leave the call instead of ending it for everyone
         call.leave();
+        // mark participant as left (best-effort)
+        try {
+            await leaveMeeting({ meetingId });
+        } catch (e) {
+            console.warn("[CallUI] Failed to record participant leave:", e);
+        }
         setShow("ended");
     };
     return (

@@ -90,3 +90,15 @@ export const meetings =pgTable("meetings",{
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
 
 });
+
+// Meeting participants table (for multi-user access control)
+export const meetingParticipants = pgTable("meeting_participants", {
+    id: text("id").primaryKey().$defaultFn(() => nanoid()),
+    meetingId: text("meeting_id").notNull().references(() => meetings.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    role: text("role"),
+    joinedAt: timestamp("joined_at").defaultNow(),
+    leftAt: timestamp("left_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
