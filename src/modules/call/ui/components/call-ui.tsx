@@ -21,13 +21,36 @@ export const CallUI=({meetingId, meetingName, agentId}:Props)=>{
     const { mutateAsync: joinMeeting } = useMutation(trpc.meetings.join.mutationOptions());
     const { mutateAsync: leaveMeeting } = useMutation(trpc.meetings.leave.mutationOptions());
 
+    // Ensure we fully stop any queued or ongoing browser TTS
+    const forceStopTTS = () => {
+        try {
+            window.speechSynthesis?.cancel();
+            window.speechSynthesis?.pause();
+            window.speechSynthesis?.resume();
+            window.speechSynthesis?.cancel();
+        } catch {}
+
+        const tryAgain = (delay: number) => window.setTimeout(() => {
+            try {
+                window.speechSynthesis?.cancel();
+                window.speechSynthesis?.pause();
+                window.speechSynthesis?.resume();
+                window.speechSynthesis?.cancel();
+            } catch {}
+        }, delay);
+
+        tryAgain(50);
+        tryAgain(150);
+        tryAgain(300);
+    };
+
     // Monitor call state changes to handle when call ends
     useEffect(() => {
         if (!call) return;
 
         const handleCallEnded = () => {
             console.log('[CallUI] Call ended, cleaning up...');
-            try { window.speechSynthesis?.cancel(); } catch (_) {}
+            forceStopTTS();
             setShow("ended");
         };
 
@@ -59,7 +82,7 @@ export const CallUI=({meetingId, meetingName, agentId}:Props)=>{
     const handleLeave= async () => {
         if(!call) return;
         console.log('[CallUI] User leaving call...');
-        try { window.speechSynthesis?.cancel(); } catch (_) {}
+        forceStopTTS();
         // Leave the call instead of ending it for everyone
         call.leave();
         // mark participant as left (best-effort)
