@@ -102,3 +102,16 @@ export const meetingParticipants = pgTable("meeting_participants", {
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// Conversation chunks captured per meeting, merged later for summary/insights
+export const conversationChunks = pgTable("conversation_chunks", {
+  id: text("id").primaryKey().$defaultFn(() => nanoid()),
+  meetingId: text("meeting_id").notNull().references(() => meetings.id, { onDelete: "cascade" }),
+  speaker: text("speaker").notNull(), // 'user' | 'ai'
+  userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
+  userName: text("user_name"),
+  text: text("text").notNull(),
+  ts: timestamp("ts").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});

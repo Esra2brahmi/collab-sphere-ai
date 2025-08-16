@@ -3,6 +3,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { CustomSpeakerLayout } from "./custom-speaker-layout";
+import { authClient } from "@/lib/auth-client";
 
 interface Props {
     onLeave: () => void;
@@ -40,6 +41,7 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
     const { useParticipants } = useCallStateHooks();
     const participants = useParticipants();
     const call = useCall();
+    const { data: session } = authClient.useSession();
     const [isListening, setIsListening] = useState(false);
     const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
     const [isAIMuted, setIsAIMuted] = useState(false);
@@ -56,6 +58,9 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
     const lastMicStateRef = useRef<boolean | null>(null);
     const lastQuestionRef = useRef<string>("");
     const conversationLogRef = useRef<string[]>([]);
+    const [localUserName, setLocalUserName] = useState<string>("User");
+    const accountUserId = session?.user?.id as string | undefined;
+    const accountUserName = session?.user?.name as string | undefined;
 
     const forceStopTTS = () => {
         try {
@@ -96,6 +101,16 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
                 .catch(err => console.error('Failed to get agent name:', err));
         }
     }, [agentId]);
+
+    // Determine local user's display name from participants list (best-effort)
+    useEffect(() => {
+        try {
+            const me = (participants as any[])?.find?.((p: any) => p?.isLocalParticipant || p?.isSelf);
+            if (me?.name && typeof me.name === 'string') {
+                setLocalUserName(me.name);
+            }
+        } catch {}
+    }, [participants]);
 
     // Initialize available voices
     useEffect(() => {
@@ -222,385 +237,507 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
         };
     }, []);
 
-    // Handle user speech input
-    const handleUserMessage = async (message: string) => {
-        if (!agentId || isShuttingDownRef.current) return;
 
-        // Store the question for later response
-        lastQuestionRef.current = message;
-        setWaitingForQuestion(false);
-        // Append to conversation log
-        conversationLogRef.current.push(`User: ${message}`);
+// Monitor mic state changes and sync with AI speech recognition
+useEffect(() => {
+    if (!call || !agentId || isAIListeningDisabled) return;
+
+    const checkMicState = () => {
+        const isMicEnabled = call.microphone.enabled;
         
-        // Don't respond immediately - wait for manual trigger
-        console.log(`[User asked]: ${message}`);
-        
-        // Never respond automatically - only store the question
-        // Response will only happen when user clicks the manual trigger button
-    };
-
-    // Helper: split long text into manageable chunks
-    const splitTextIntoChunks = (text: string, maxLen = 220): string[] => {
-        const sentences = text
-            .replace(/\s+/g, ' ')
-            .trim()
-            .split(/(?<=[.!?])\s+/);
-        const chunks: string[] = [];
-        let current = '';
-        for (const s of sentences) {
-            if ((current + ' ' + s).trim().length <= maxLen) {
-                current = (current ? current + ' ' : '') + s;
-            } else {
-                if (current) chunks.push(current);
-                if (s.length <= maxLen) {
-                    current = s;
-                } else {
-                    for (let i = 0; i < s.length; i += maxLen) {
-                        const piece = s.slice(i, i + maxLen);
-                        if (piece.length === maxLen) {
-                            chunks.push(piece);
-                        } else {
-                            current = piece;
-                        }
-                    }
-                }
-            }
-        }
-        if (current) chunks.push(current);
-        return chunks;
-    };
-
-    // Text-to-speech for agent responses
-    const speakResponse = (text: string) => {
-        if (!('speechSynthesis' in window) || isAIMuted) return;
-        if (isShuttingDownRef.current) return;
-        // Append to conversation log
-        if (text?.trim()) {
-            conversationLogRef.current.push(`AI: ${text}`);
-        }
-        if (isAgentSpeaking) {
-            console.log('[TTS] Already speaking, stopping current speech first');
-            forceStopTTS();
-            // Wait a bit before starting new speech
-            setTimeout(() => {
-                if (!isShuttingDownRef.current && !isAIMuted) {
-                    speakResponse(text);
-                }
-            }, 100);
-            return;
-        }
-
-        // Pause STT while TTS is active
-        if (recognitionRef.current && isListening) {
-            try {
-                recognitionRef.current.stop();
-                recognitionPausedByTTSRef.current = true;
-                setIsListening(false);
-            } catch (_) {}
-        }
-
-        window.speechSynthesis.cancel();
-        ttsStopRequestedRef.current = false;
-
-        const chunks = splitTextIntoChunks(text);
-        if (chunks.length === 0) return;
-
-        setIsAgentSpeaking(true);
-
-        const speakChunkAt = (index: number) => {
-            if (isShuttingDownRef.current || ttsStopRequestedRef.current || isAIMuted) {
-                setIsAgentSpeaking(false);
-                return;
-            }
-            if (index >= chunks.length) {
-                setIsAgentSpeaking(false);
-                // Resume STT if we paused it AND mic is still enabled
-                if (
-                    recognitionRef.current &&
-                    recognitionPausedByTTSRef.current &&
-                    !isShuttingDownRef.current &&
-                    !ttsStopRequestedRef.current &&
-                    call?.microphone.enabled &&
-                    !isAIListeningDisabled
-                ) {
+        if (lastMicStateRef.current !== isMicEnabled) {
+            lastMicStateRef.current = isMicEnabled;
+            
+            if (isMicEnabled && !isListening) {
+                if (recognitionRef.current && !isShuttingDownRef.current) {
                     try {
                         recognitionRef.current.start();
                         setIsListening(true);
+                        // Remove automatic greeting - only greet when manually triggered
                     } catch (e) {
-                        console.error('Failed to resume recognition after TTS:', e);
-                        setIsListening(false);
-                    } finally {
-                        recognitionPausedByTTSRef.current = false;
+                        console.error('Failed to start recognition:', e);
                     }
                 }
-                return;
-            }
-
-            if (isShuttingDownRef.current || ttsStopRequestedRef.current || isAIMuted) {
-                setIsAgentSpeaking(false);
-                return;
-            }
-            const utterance = new SpeechSynthesisUtterance(chunks[index]);
-            
-            // Set voice if selected
-            if (selectedVoice !== "default") {
-                const voices = window.speechSynthesis.getVoices();
-                const selectedVoiceObj = voices.find(voice => voice.name === selectedVoice);
-                if (selectedVoiceObj) {
-                    utterance.voice = selectedVoiceObj;
+            } else if (!isMicEnabled && isListening) {
+                if (recognitionRef.current) {
+                    try {
+                        recognitionRef.current.stop();
+                        setIsListening(false);
+                    } catch (e) {
+                        console.error('Failed to stop recognition:', e);
+                    }
                 }
-            }
-            
-            utterance.rate = 0.95;
-            utterance.pitch = 1.05;
-            utterance.volume = 0.85;
-
-            utterance.onend = () => {
-                if (!isShuttingDownRef.current && !ttsStopRequestedRef.current && !isAIMuted) {
-                    speakChunkAt(index + 1);
-                } else {
+                
+                // Stop AI from speaking when mic is disabled
+                if (isAgentSpeaking) {
+                    console.log('[Mic disabled] Stopping AI speech');
+                    ttsStopRequestedRef.current = true;
+                    forceStopTTS();
                     setIsAgentSpeaking(false);
                 }
-            };
-            utterance.onerror = (event) => {
-                console.error('Speech synthesis error:', event);
-                if (!isShuttingDownRef.current && !ttsStopRequestedRef.current && !isAIMuted) {
-                    speakChunkAt(index + 1);
-                } else {
-                    setIsAgentSpeaking(false);
-                }
-            };
-
-            window.speechSynthesis.speak(utterance);
-        };
-
-        speakChunkAt(0);
+                
+                // Keep the last question so user can still trigger the response manually
+            }
+        }
     };
 
-    // Greet on user gesture
-    const greetIfNeededOnGesture = () => {
-        if (greetedRef.current || isShuttingDownRef.current || isAIMuted) return;
+    checkMicState();
+    const intervalId = setInterval(checkMicState, 500);
+
+    return () => clearInterval(intervalId);
+}, [call, agentId, isListening, isAIListeningDisabled, isAgentSpeaking]);
+
+// Initialize speech recognition
+useEffect(() => {
+    isShuttingDownRef.current = false;
+    ttsStopRequestedRef.current = false;
+    greetedRef.current = false;
+    recognitionPausedByTTSRef.current = false;
+    lastMicStateRef.current = null;
+
+    if (typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition)) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        recognitionRef.current = new SpeechRecognition();
         
-        // Add a small delay to ensure voice selection is applied
-        setTimeout(() => {
-            if (greetedRef.current || isShuttingDownRef.current || isAIMuted) return;
-            
-            const participantCount = participants.length;
-            const greeting = participantCount > 1 
-                ? `Hello everyone! I'm ${agentName}. I'm here to help all ${participantCount} of you during this call. I'll wait for your questions and respond when you trigger me.`
-                : `Hello! I'm ${agentName}. I'm here to help you during this call. I'll wait for your questions and respond when you trigger me.`;
-            greetedRef.current = true;
-            speakResponse(greeting);
-            setWaitingForQuestion(true);
-        }, 200); // 200ms delay to ensure voice is set
-    };
+        if (recognitionRef.current) {
+            recognitionRef.current.continuous = true;
+            recognitionRef.current.interimResults = true;
+            recognitionRef.current.lang = 'en-US';
 
-    // Manual trigger for AI response
-    const handleManualTrigger = async () => {
-        if (isAgentSpeaking) {
-            // AI is currently speaking - stop it
-            console.log('[Manual trigger] Stopping current AI speech');
-            ttsStopRequestedRef.current = true;
-            forceStopTTS();
+            recognitionRef.current.onresult = (event: SpeechRecognitionEvent) => {
+                if (isShuttingDownRef.current) return;
+                let finalTranscript = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const result = event.results[i];
+                    if (result.isFinal) {
+                        finalTranscript += result[0].transcript;
+                    }
+                }
+
+                if (finalTranscript.trim()) {
+                    handleUserMessage(finalTranscript.trim());
+                }
+            };
+
+            recognitionRef.current.onerror = (event) => {
+                if (isShuttingDownRef.current) return;
+                console.error('Speech recognition error:', event);
+                setIsListening(false);
+            };
+
+            recognitionRef.current.onend = () => {
+                if (isShuttingDownRef.current) return;
+                setIsListening(false);
+            };
+        }
+    }
+
+    return () => {
+        if (recognitionRef.current) {
+            try { recognitionRef.current.stop(); } catch {}
+        }
+    };
+}, []);
+
+// Handle user speech input
+const handleUserMessage = async (message: string) => {
+    if (!message) return;
+
+    // Log user message, then send to your agent backend or LLM
+    // Append to conversation log and sync per-user chunk
+    conversationLogRef.current.push(`${accountUserName || localUserName}: ${message}`);
+    // Store the question for later manual response
+    lastQuestionRef.current = message;
+    setWaitingForQuestion(false);
+    try {
+        fetch('/api/conversation-sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                meetingId,
+                mode: 'append',
+                chunk: {
+                    speaker: 'user',
+                    userId: accountUserId,
+                    userName: accountUserName || localUserName,
+                    text: message,
+                    ts: Date.now(),
+                },
+            }),
+        }).catch(() => {});
+    } catch {}
+    
+    // Don't respond immediately - wait for manual trigger
+    console.log(`[User asked]: ${message}`);
+    
+    // Never respond automatically - only store the question
+    // Response will only happen when user clicks the manual trigger button
+};
+
+// Helper: split long text into manageable chunks
+const splitTextIntoChunks = (text: string, maxLen = 220): string[] => {
+    const sentences = text
+        .replace(/\s+/g, ' ')
+        .trim()
+        .split(/(?<=[.!?])\s+/);
+    const chunks: string[] = [];
+    let current = '';
+    for (const s of sentences) {
+        if ((current + ' ' + s).trim().length <= maxLen) {
+            current = (current ? current + ' ' : '') + s;
+        } else {
+            if (current) chunks.push(current);
+            if (s.length <= maxLen) {
+                current = s;
+            } else {
+                for (let i = 0; i < s.length; i += maxLen) {
+                    const piece = s.slice(i, i + maxLen);
+                    if (piece.length === maxLen) {
+                        chunks.push(piece);
+                    } else {
+                        current = piece;
+                    }
+                }
+            }
+        }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+};
+
+// Text-to-speech for agent responses
+const speakResponse = async (text: string) => {
+    if (!text) return;
+    if (!('speechSynthesis' in window) || isAIMuted) return;
+    if (isShuttingDownRef.current) return;
+    // Append to conversation log and sync AI chunk
+    if (!ttsStopRequestedRef.current) {
+        conversationLogRef.current.push(`AI: ${text}`);
+        try {
+            fetch('/api/conversation-sync', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    meetingId,
+                    mode: 'append',
+                    chunk: {
+                        speaker: 'ai',
+                        text,
+                        ts: Date.now(),
+                    },
+                }),
+            }).catch(() => {});
+        } catch {}
+    }
+    if (isAgentSpeaking) {
+        console.log('[TTS] Already speaking, stopping current speech first');
+        forceStopTTS();
+        // Wait a bit before starting new speech
+        setTimeout(() => {
+            if (!isShuttingDownRef.current && !ttsStopRequestedRef.current && !isAIMuted) {
+                speakResponse(text);
+            }
+        }, 100);
+        return;
+    }
+
+    // Pause STT while TTS is active
+    if (recognitionRef.current && isListening) {
+        try {
+            recognitionRef.current.stop();
+            recognitionPausedByTTSRef.current = true;
+            setIsListening(false);
+        } catch (_) {}
+    }
+
+    window.speechSynthesis.cancel();
+    ttsStopRequestedRef.current = false;
+
+    const chunks = splitTextIntoChunks(text);
+    if (chunks.length === 0) return;
+
+    setIsAgentSpeaking(true);
+
+    const speakChunkAt = (index: number) => {
+        if (isShuttingDownRef.current || ttsStopRequestedRef.current || isAIMuted) {
             setIsAgentSpeaking(false);
             return;
         }
-
-        if (lastQuestionRef.current && !isAIMuted) {
-            // Respond to the last question (prioritize this over greeting)
-            try {
-                console.log(`[Manual trigger] Responding to: ${lastQuestionRef.current}`);
-                
-                const response = await fetch('/api/groq-chat', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        message: lastQuestionRef.current,
-                        agentId,
-                    }),
-                });
-
-                if (!response.ok) {
-                    throw new Error('Failed to get agent response');
-                }
-
-                const data = await response.json();
-                console.log(`[Agent response]: ${data.response}`);
-                
-                if (isShuttingDownRef.current) return;
-                speakResponse(data.response);
-                // Clear the last question after speaking the response
-                lastQuestionRef.current = "";
-                setWaitingForQuestion(true);
-                
-            } catch (error) {
-                if (!isShuttingDownRef.current) {
-                    console.error('Error getting agent response:', error);
-                }
-            }
-        } else if (!greetedRef.current && !isAIMuted) {
-            // No question asked yet and haven't greeted - give initial greeting
-            greetIfNeededOnGesture();
-        } else if (greetedRef.current && !lastQuestionRef.current && !isAIMuted) {
-            // Already greeted but no question - prompt user to ask a question
-            const prompt = "I'm ready to help! Please ask me a question first, then I'll respond when you trigger me.";
-            speakResponse(prompt);
-        }
-    };
-
-    // Handle voice change
-    const handleVoiceChange = (voice: string) => {
-        // Stop any ongoing speech immediately when changing voice
-        ttsStopRequestedRef.current = true;
-        forceStopTTS();
-        setIsAgentSpeaking(false);
-        
-        setSelectedVoice(voice);
-        console.log(`[Voice changed to]: ${voice}`);
-        
-        // Reset greeting so user can hear new voice immediately
-        greetedRef.current = false;
-        
-        // Don't auto-greet - let user trigger manually
-    };
-
-    // Test voice function
-    const handleTestVoice = () => {
-        if (!isAIMuted && !isAgentSpeaking) {
-            const testMessage = `Hello! This is ${agentName} speaking with the ${selectedVoice} voice. How can I help you today?`;
-            speakResponse(testMessage);
-        }
-    };
-
-    // AI Controls
-    const handleToggleAIMute = () => {
-        setIsAIMuted(!isAIMuted);
-        if (isAIMuted) {
-            // Unmuting - do nothing special
-        } else {
-            // Muting - stop current speech
-            ttsStopRequestedRef.current = true;
-            forceStopTTS();
+        if (index >= chunks.length) {
             setIsAgentSpeaking(false);
-
-            // Ensure STT is active so user can ask while muted
+            // Resume STT if we paused it AND mic is still enabled
             if (
-                call?.microphone.enabled &&
-                !isAIListeningDisabled &&
                 recognitionRef.current &&
-                !isListening &&
-                !isShuttingDownRef.current
+                recognitionPausedByTTSRef.current &&
+                !isShuttingDownRef.current &&
+                !ttsStopRequestedRef.current &&
+                call?.microphone.enabled &&
+                !isAIListeningDisabled
             ) {
                 try {
                     recognitionRef.current.start();
                     setIsListening(true);
                 } catch (e) {
-                    console.error('Failed to start recognition after muting AI:', e);
+                    console.error('Failed to resume recognition after TTS:', e);
+                    setIsListening(false);
+                } finally {
+                    recognitionPausedByTTSRef.current = false;
                 }
             }
+            return;
         }
-    };
 
-    const handleToggleAIListening = () => {
-        setIsAIListeningDisabled(!isAIListeningDisabled);
-        if (isAIListeningDisabled) {
-            // Re-enabling listening
-            if (call?.microphone.enabled && !isListening) {
-                try {
-                    recognitionRef.current?.start();
-                    setIsListening(true);
-                } catch (e) {
-                    console.error('Failed to start recognition:', e);
-                }
-            }
-        } else {
-            // Disabling listening
-            try {
-                recognitionRef.current?.stop();
-                setIsListening(false);
-            } catch (e) {
-                console.error('Failed to stop recognition:', e);
+        if (isShuttingDownRef.current || ttsStopRequestedRef.current || isAIMuted) {
+            setIsAgentSpeaking(false);
+            return;
+        }
+        const utterance = new SpeechSynthesisUtterance(chunks[index]);
+        
+        // Set voice if selected
+        if (selectedVoice !== "default") {
+            const voices = window.speechSynthesis.getVoices();
+            const selectedVoiceObj = voices.find(voice => voice.name === selectedVoice);
+            if (selectedVoiceObj) {
+                utterance.voice = selectedVoiceObj;
             }
         }
+        
+        utterance.rate = 0.95;
+        utterance.pitch = 1.05;
+        utterance.volume = 0.85;
+
+        utterance.onend = () => {
+            if (!isShuttingDownRef.current && !ttsStopRequestedRef.current && !isAIMuted) {
+                speakChunkAt(index + 1);
+            } else {
+                setIsAgentSpeaking(false);
+            }
+        };
+        utterance.onerror = (event) => {
+            console.error('Speech synthesis error:', event);
+            if (!isShuttingDownRef.current && !ttsStopRequestedRef.current && !isAIMuted) {
+                speakChunkAt(index + 1);
+            } else {
+                setIsAgentSpeaking(false);
+            }
+        };
+
+        window.speechSynthesis.speak(utterance);
     };
 
-    // Stop TTS/STT immediately and then delegate to parent leave
-    const handleLeaveAndStopAudio = async () => {
+    speakChunkAt(0);
+};
+
+// Greet on user gesture
+const greetIfNeededOnGesture = () => {
+    if (greetedRef.current || isShuttingDownRef.current || isAIMuted) return;
+    
+    // Add a small delay to ensure voice selection is applied
+    setTimeout(() => {
+        if (greetedRef.current || isShuttingDownRef.current || isAIMuted) return;
+        
+        const participantCount = participants.length;
+        const greeting = participantCount > 1 
+            ? `Hello everyone! I'm ${agentName}. I'm here to help all ${participantCount} of you during this call. I'll wait for your questions and respond when you trigger me.`
+            : `Hello! I'm ${agentName}. I'm here to help you during this call. I'll wait for your questions and respond when you trigger me.`;
+        greetedRef.current = true;
+        speakResponse(greeting);
+        setWaitingForQuestion(true);
+    }, 200); // 200ms delay to ensure voice is set
+};
+
+// Manual trigger for AI response
+const handleManualTrigger = async () => {
+    if (isAgentSpeaking) {
+        // AI is currently speaking - stop it
+        console.log('[Manual trigger] Stopping current AI speech');
         ttsStopRequestedRef.current = true;
-        isShuttingDownRef.current = true;
+        forceStopTTS();
+        setIsAgentSpeaking(false);
+        return;
+    }
+
+    if (lastQuestionRef.current && !isAIMuted) {
+        // Respond to the last question (prioritize this over greeting)
+        try {
+            console.log(`[Manual trigger] Responding to: ${lastQuestionRef.current}`);
+            
+            const response = await fetch('/api/groq-chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    message: lastQuestionRef.current,
+                    agentId,
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to get agent response');
+            }
+
+            const data = await response.json();
+            console.log(`[Agent response]: ${data.response}`);
+            
+            if (isShuttingDownRef.current) return;
+            speakResponse(data.response);
+            // Clear the last question after speaking the response
+            lastQuestionRef.current = "";
+            setWaitingForQuestion(true);
+            
+        } catch (error) {
+            if (!isShuttingDownRef.current) {
+                console.error('Error getting agent response:', error);
+            }
+        }
+    } else if (!greetedRef.current && !isAIMuted) {
+        // No question asked yet and haven't greeted - give initial greeting
+        greetIfNeededOnGesture();
+    } else if (greetedRef.current && !lastQuestionRef.current && !isAIMuted) {
+        // Already greeted but no question - prompt user to ask a question
+        const prompt = "I'm ready to help! Please ask me a question first, then I'll respond when you trigger me.";
+        speakResponse(prompt);
+    }
+};
+
+// Handle voice change
+const handleVoiceChange = (voice: string) => {
+    // Stop any ongoing speech immediately when changing voice
+    ttsStopRequestedRef.current = true;
+    forceStopTTS();
+    setIsAgentSpeaking(false);
+    
+    setSelectedVoice(voice);
+    console.log(`[Voice changed to]: ${voice}`);
+    
+    // Reset greeting so user can hear new voice immediately
+    greetedRef.current = false;
+    
+    // Don't auto-greet - let user trigger manually
+};
+
+// Test voice function
+const handleTestVoice = () => {
+    if (!isAIMuted && !isAgentSpeaking) {
+        const testMessage = `Hello! This is ${agentName} speaking with the ${selectedVoice} voice. How can I help you today?`;
+        speakResponse(testMessage);
+    }
+};
+
+// AI Controls
+const handleToggleAIMute = () => {
+    setIsAIMuted(!isAIMuted);
+    if (isAIMuted) {
+        // Unmuting - do nothing special
+    } else {
+        // Muting - stop current speech
+        ttsStopRequestedRef.current = true;
+        forceStopTTS();
+        setIsAgentSpeaking(false);
+
+        // Ensure STT is active so user can ask while muted
+        if (
+            call?.microphone.enabled &&
+            !isAIListeningDisabled &&
+            recognitionRef.current &&
+            !isListening &&
+            !isShuttingDownRef.current
+        ) {
+            try {
+                recognitionRef.current.start();
+                setIsListening(true);
+            } catch (e) {
+                console.error('Failed to start recognition after muting AI:', e);
+            }
+        }
+    }
+};
+
+const handleToggleAIListening = () => {
+    setIsAIListeningDisabled(!isAIListeningDisabled);
+    if (isAIListeningDisabled) {
+        // Re-enabling listening
+        if (call?.microphone.enabled && !isListening) {
+            try {
+                recognitionRef.current?.start();
+                setIsListening(true);
+            } catch (e) {
+                console.error('Failed to start recognition:', e);
+            }
+        }
+    } else {
+        // Disabling listening
+        try {
+            recognitionRef.current?.stop();
+            setIsListening(false);
+        } catch (e) {
+            console.error('Failed to stop recognition:', e);
+        }
+    }
+};
+
+// Stop TTS/STT immediately and then delegate to parent leave
+const handleLeaveAndStopAudio = async () => {
+    console.log('[CallActive] Handle leave: stopping audio pipelines and finalizing meeting...');
+    setIsAIListeningDisabled(true);
+    setIsListening(false);
+    setIsAgentSpeaking(false);
+    ttsStopRequestedRef.current = true;
+    isShuttingDownRef.current = true;
+    // Stop TTS/STT aggressively
+    try { forceStopTTS(); } catch {}
+    try { recognitionRef.current?.abort(); } catch {}
+    // Send conversation for summary and mark meeting completed
+    try {
+        // Fetch merged transcript across all participants from sync API
+        const joined = await fetch(`/api/conversation-sync?meetingId=${encodeURIComponent(meetingId)}&format=joined`).then(r => r.json()).catch(() => null);
+        const mergedTranscript: string = joined?.transcript || conversationLogRef.current.join('\n');
+        await fetch('/api/meeting-complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                meetingId,
+                conversation: mergedTranscript,
+            }),
+        });
+    } catch (e) {
+        console.error('Failed to finalize meeting:', e);
+    }
+    onLeave();
+};
+
+// Ensure TTS/STS stop when component unmounts or tab becomes hidden
+useEffect(() => {
+    const stopAudioPipelines = () => {
         forceStopTTS();
         try { recognitionRef.current?.abort(); } catch (_) {}
         setIsListening(false);
         setIsAgentSpeaking(false);
-        // Send conversation for summary and mark meeting completed
-        try {
-            await fetch('/api/meeting-complete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    meetingId,
-                    conversation: conversationLogRef.current.join('\n')
-                }),
-            });
-        } catch (e) {
-            console.error('Failed to finalize meeting:', e);
-        }
-        onLeave();
+        ttsStopRequestedRef.current = true;
+        isShuttingDownRef.current = true;
     };
 
-    // Ensure TTS/STS stop when component unmounts or tab becomes hidden
-    useEffect(() => {
-        const stopAudioPipelines = () => {
-            forceStopTTS();
-            try { recognitionRef.current?.abort(); } catch (_) {}
-            setIsListening(false);
-            setIsAgentSpeaking(false);
-            ttsStopRequestedRef.current = true;
-            isShuttingDownRef.current = true;
-        };
-
-        const handleVisibility = () => {
-            if (document.hidden) {
-                stopAudioPipelines();
-            }
-        };
-
-        const handlePageHide = () => stopAudioPipelines();
-        const handleBeforeUnload = () => stopAudioPipelines();
-
-        document.addEventListener('visibilitychange', handleVisibility);
-        window.addEventListener('pagehide', handlePageHide);
-        window.addEventListener('beforeunload', handleBeforeUnload);
-        return () => {
-            document.removeEventListener('visibilitychange', handleVisibility);
-            window.removeEventListener('pagehide', handlePageHide);
-            window.removeEventListener('beforeunload', handleBeforeUnload);
+    const handleVisibility = () => {
+        if (document.hidden) {
             stopAudioPipelines();
-        };
-    }, []);
+        }
+    };
 
-    // Handle call state changes
-    useEffect(() => {
-        if (!call) return;
+    const handlePageHide = () => stopAudioPipelines();
+    const handleBeforeUnload = () => stopAudioPipelines();
 
-        const handleCallStateChange = () => {
-            console.log('[CallActive] Call state changed, ensuring cleanup...');
-            forceStopTTS();
-            try { recognitionRef.current?.abort(); } catch (_) {}
-            setIsListening(false);
-            setIsAgentSpeaking(false);
-            ttsStopRequestedRef.current = true;
-            isShuttingDownRef.current = true;
-        };
-
-        const unsubscribe = call.on('callEnded', handleCallStateChange);
-        
-        return () => {
-            unsubscribe();
-        };
-    }, [call]);
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+        document.removeEventListener('visibilitychange', handleVisibility);
+        window.removeEventListener('pagehide', handlePageHide);
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        stopAudioPipelines();
+    };
+}, []);
 
     return (
         <div className="flex h-full text-white">
