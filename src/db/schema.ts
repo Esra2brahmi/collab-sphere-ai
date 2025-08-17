@@ -115,3 +115,55 @@ export const conversationChunks = pgTable("conversation_chunks", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// Project phases for task management
+export const projectPhases = pgTable("project_phases", {
+  id: text("id").primaryKey().$defaultFn(() => nanoid()),
+  name: text("name").notNull(),
+  order: integer("order").notNull(),
+  color: text("color").notNull().default("#3B82F6"),
+  meetingId: text("meeting_id").notNull().references(() => meetings.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Tasks for project management
+export const tasks = pgTable("tasks", {
+  id: text("id").primaryKey().$defaultFn(() => nanoid()),
+  title: text("title").notNull(),
+  description: text("description"),
+  phase: text("phase").notNull(),
+  status: text("status").notNull().default("todo"), // 'todo' | 'in-progress' | 'done'
+  assignee: text("assignee"),
+  assigneeId: text("assignee_id").references(() => user.id, { onDelete: "set null" }),
+  priority: text("priority").notNull().default("medium"), // 'low' | 'medium' | 'high'
+  estimatedHours: integer("estimated_hours"),
+  dueDate: timestamp("due_date"),
+  aiGenerated: boolean("ai_generated").notNull().default(false),
+  meetingId: text("meeting_id").notNull().references(() => meetings.id, { onDelete: "cascade" }),
+  tags: text("tags").array(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Subtasks for detailed task breakdown
+export const subtasks = pgTable("subtasks", {
+  id: text("id").primaryKey().$defaultFn(() => nanoid()),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  completed: boolean("completed").notNull().default(false),
+  aiGenerated: boolean("ai_generated").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// AI-generated project plans
+export const aiProjectPlans = pgTable("ai_project_plans", {
+  id: text("id").primaryKey().$defaultFn(() => nanoid()),
+  meetingId: text("meeting_id").notNull().references(() => meetings.id, { onDelete: "cascade" }),
+  phases: text("phases").notNull(), // JSON string of ProjectPhase[]
+  suggestedAssignees: text("suggested_assignees").notNull(), // JSON string of SuggestedAssignee[]
+  workloadAnalysis: text("workload_analysis").notNull(), // JSON string of WorkloadAnalysis
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});

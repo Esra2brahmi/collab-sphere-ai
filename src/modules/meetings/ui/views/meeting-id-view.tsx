@@ -14,6 +14,7 @@ import { ActiveState } from "../components/active-state";
 import { CancelledState } from "../components/cancelled-state";
 import { ProcessingState } from "../components/processing-state";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TasksView } from "../../../tasks/ui/views/tasks-view";
 
 
 interface Props {
@@ -263,6 +264,7 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                         <TabsTrigger value="overview">Overview</TabsTrigger>
                         <TabsTrigger value="summary">Summary</TabsTrigger>
                         <TabsTrigger value="insights">Team Insights</TabsTrigger>
+                        <TabsTrigger value="tasks">Tasks</TabsTrigger>
                     </TabsList>
                     <TabsContent value="overview">
                         <div className="rounded-lg border p-4 text-sm">This meeting has been completed.</div>
@@ -386,6 +388,10 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                         ) : (
                           <div className="rounded-lg border p-4 text-sm">Insights are unavailable for this meeting.</div>
                         )}
+                    </TabsContent>
+
+                    <TabsContent value="tasks">
+                        <TasksView meetingId={meetingId} />
                     </TabsContent>
                 </Tabs>
               )}
