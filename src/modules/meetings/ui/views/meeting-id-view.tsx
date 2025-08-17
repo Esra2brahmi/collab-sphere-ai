@@ -297,10 +297,6 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                               <span className="rounded bg-muted px-2 py-1">
                                 Source: {insights?.source === 'groq' ? 'Groq (LLM)' : insights?.source === 'heuristic' ? 'Heuristic' : insights?.source === 'hf-sst2' ? 'HF SST-2' : insights?.source === 'hybrid' ? 'Hybrid (HF + Groq)' : 'Unknown'}
                               </span>
-                              <div className="ml-auto flex items-center gap-2">
-                                <button onClick={handleCopySummary} className="text-xs underline">Copy Summary</button>
-                                <button onClick={handleDownloadInsights} className="text-xs underline">Download JSON</button>
-                              </div>
                             </div>
                             {/* Sentiment */}
                             <div className="rounded-lg border p-4">
