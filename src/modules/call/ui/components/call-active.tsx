@@ -61,6 +61,7 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
     const [localUserName, setLocalUserName] = useState<string>("User");
     const accountUserId = session?.user?.id as string | undefined;
     const accountUserName = session?.user?.name as string | undefined;
+    const [participantNames, setParticipantNames] = useState<string[]>([]);
 
     const forceStopTTS = () => {
         try {
@@ -101,6 +102,21 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
                 .catch(err => console.error('Failed to get agent name:', err));
         }
     }, [agentId]);
+
+    // Get meeting participants from database
+    useEffect(() => {
+        if (meetingId) {
+            fetch(`/api/meeting-participants?meetingId=${meetingId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.participants && Array.isArray(data.participants)) {
+                        const names = data.participants.map((p: any) => p.name).filter(Boolean);
+                        setParticipantNames(names);
+                    }
+                })
+                .catch(err => console.error('Failed to get meeting participants:', err));
+        }
+    }, [meetingId]);
 
     // Determine local user's display name from participants list (best-effort)
     useEffect(() => {
@@ -747,9 +763,14 @@ useEffect(() => {
                 <Link href="/" className="flex items-center justify-center p-1 bg-white/10 rounded-full w-fit">
                     <Image src="/logo.svg" width={22} height={22} alt="Logo" />
                 </Link>
-                <h4 className="text-base">
-                    {meetingName}
-                </h4>
+                <div className="flex flex-col">
+                    <h4 className="text-base font-medium">
+                        {meetingName}
+                    </h4>
+                    <div className="text-sm text-gray-300">
+                        Participants: {participantNames.length > 0 ? participantNames.join(', ') : 'You'}, {agentName}
+                    </div>
+                </div>
             </div>
 
                 {/* Participants Grid with AI */}

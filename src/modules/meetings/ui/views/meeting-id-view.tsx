@@ -29,6 +29,7 @@ export const MeetingIdView = ({meetingId} : Props)=>{
         "Are you sure?",
         "The following action will remove this meeting"
     );
+    const [participantNames, setParticipantNames] = useState<string[]>([]);
     const {data} = useSuspenseQuery(
         trpc.meetings.getOne.queryOptions({id:meetingId}),
     );
@@ -62,6 +63,21 @@ export const MeetingIdView = ({meetingId} : Props)=>{
         }, 4000);
         return () => clearInterval(id);
     }, [isProcessing, queryClient, trpc.meetings.getOne, meetingId]);
+
+    // Get meeting participants from database
+    useEffect(() => {
+        if (meetingId) {
+            fetch(`/api/meeting-participants?meetingId=${meetingId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.participants && Array.isArray(data.participants)) {
+                        const names = data.participants.map((p: any) => p.name).filter(Boolean);
+                        setParticipantNames(names);
+                    }
+                })
+                .catch(err => console.error('Failed to get meeting participants:', err));
+        }
+    }, [meetingId]);
 
     // Parse structured summary payload if present
     type InsightsRoleSuggestion = { role: string; user: string; confidence: number; reasoning?: string };
@@ -113,6 +129,94 @@ export const MeetingIdView = ({meetingId} : Props)=>{
       try { await navigator.clipboard.writeText(text); } catch (_) {}
     }, [parsedSummary, data.summary]);
 
+    const handleDownloadPDF = useCallback(async () => {
+      const text = parsedSummary?.summaryText || (data.summary as unknown as string) || '';
+      if (!text) return;
+      
+      try {
+        // Create a simple HTML document for the PDF
+        const htmlContent = `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset="utf-8">
+              <title>Meeting Summary - ${data.name}</title>
+              <style>
+                body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+                .header { border-bottom: 2px solid #333; padding-bottom: 20px; margin-bottom: 30px; }
+                .meeting-title { font-size: 24px; font-weight: bold; margin-bottom: 10px; }
+                .meeting-details { color: #666; font-size: 14px; }
+                .participants { margin-bottom: 20px; }
+                .summary-content { white-space: pre-wrap; }
+                .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #ccc; color: #666; font-size: 12px; }
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                <div class="meeting-title">${data.name}</div>
+                <div class="meeting-details">
+                  <div><strong>Date:</strong> ${new Date(data.endedAt ?? data.startedAt ?? data.createdAt).toLocaleString()}</div>
+                  <div><strong>Participants:</strong> ${participantNames.length > 0 ? participantNames.join(', ') : 'You'}, ${data.agent?.name ?? 'AI Agent'}</div>
+                </div>
+              </div>
+              
+              <div class="participants">
+                <h3>Meeting Summary</h3>
+              </div>
+              
+              <div class="summary-content">${text}</div>
+              
+              <div class="footer">
+                Generated on ${new Date().toLocaleString()}
+              </div>
+            </body>
+          </html>
+        `;
+        
+        // Create a blob with the HTML content
+        const blob = new Blob([htmlContent], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        
+        // Create a temporary iframe to print/convert to PDF
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = url;
+        document.body.appendChild(iframe);
+        
+        iframe.onload = () => {
+          iframe.contentWindow?.print();
+          // Clean up after a delay
+          setTimeout(() => {
+            document.body.removeChild(iframe);
+            URL.revokeObjectURL(url);
+          }, 1000);
+        };
+      } catch (error) {
+        console.error('Error generating PDF:', error);
+        // Fallback: open in new tab for manual PDF generation
+        const text = parsedSummary?.summaryText || (data.summary as unknown as string) || '';
+        if (text) {
+          const newWindow = window.open();
+          if (newWindow) {
+            newWindow.document.write(`
+              <html>
+                <head><title>Meeting Summary - ${data.name}</title></head>
+                <body style="font-family: Arial, sans-serif; margin: 40px; line-height: 1.6;">
+                  <h1>${data.name}</h1>
+                  <p><strong>Date:</strong> ${new Date(data.endedAt ?? data.startedAt ?? data.createdAt).toLocaleString()}</p>
+                  <p><strong>Participants:</strong> ${participantNames.length > 0 ? participantNames.join(', ') : 'You'}, ${data.agent?.name ?? 'AI Agent'}</p>
+                  <h3>Meeting Summary</h3>
+                  <div style="white-space: pre-wrap;">${text}</div>
+                  <p style="margin-top: 40px; color: #666; font-size: 12px;">Generated on ${new Date().toLocaleString()}</p>
+                </body>
+              </html>
+            `);
+            newWindow.document.close();
+          }
+        }
+      }
+    }, [parsedSummary, data.summary, data.name, data.endedAt, data.startedAt, data.createdAt, data.agent?.name, participantNames]);
+
 
     return (
         <>
@@ -142,10 +246,13 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                     <TabsContent value="summary">
                         <div className="rounded-lg border p-4 space-y-3 text-sm">
                           <div className="flex flex-col gap-1 text-foreground">
-                            <div><span className="font-medium">Participants:</span> You, {data.agent?.name ?? 'AI Agent'}</div>
+                            <div><span className="font-medium">Participants:</span> {participantNames.length > 0 ? participantNames.join(', ') : 'You'}, {data.agent?.name ?? 'AI Agent'}</div>
                             <div><span className="font-medium">Date:</span> {new Date(data.endedAt ?? data.startedAt ?? data.createdAt).toLocaleString()}</div>
                           </div>
                           <div className="text-muted-foreground">Summary is being generated. Please check back shortly.</div>
+                          <div className="flex items-center gap-2 pt-2">
+                            <button onClick={handleDownloadPDF} className="text-xs underline">Download PDF</button>
+                          </div>
                         </div>
                     </TabsContent>
                 </Tabs>
@@ -163,7 +270,7 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                     <TabsContent value="summary">
                         <div className="rounded-lg border p-4 space-y-3">
                           <div className="flex flex-col gap-1 text-sm">
-                            <div><span className="font-medium">Participants:</span> You, {data.agent?.name ?? 'AI Agent'}</div>
+                            <div><span className="font-medium">Participants:</span> {participantNames.length > 0 ? participantNames.join(', ') : 'You'}, {data.agent?.name ?? 'AI Agent'}</div>
                             <div><span className="font-medium">Date:</span> {new Date(data.endedAt ?? data.startedAt ?? data.createdAt).toLocaleString()}</div>
                           </div>
                           {parsedSummary?.summaryText ? (
@@ -177,6 +284,9 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                           ) : (
                             <div className="text-sm">No summary available.</div>
                           )}
+                          <div className="flex items-center gap-2 pt-2 border-t">
+                            <button onClick={handleDownloadPDF} className="text-xs underline">Download PDF</button>
+                          </div>
                         </div>
                     </TabsContent>
                     <TabsContent value="insights">
