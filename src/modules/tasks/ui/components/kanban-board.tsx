@@ -1,16 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Task, ProjectPhase, AITaskSuggestion } from "../../types";
+import { useState } from "react";
+import { Task, ProjectPhase } from "../../types";
 import { TaskCard } from "./task-card";
 import { CreateTaskDialog } from "./create-task-dialog";
 import { Button } from "@/components/ui/button";
-import { Plus, Sparkles } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { Plus } from "lucide-react";
 
 interface KanbanBoardProps {
   meetingId: string;
   phases: ProjectPhase[];
+  tasks: Task[];
   onTaskUpdate: (taskId: string, updates: Partial<Task>) => void;
   onTaskCreate: (task: Omit<Task, 'id' | 'createdAt' | 'updatedAt'>) => void;
   onTaskDelete: (taskId: string) => void;
@@ -25,15 +25,13 @@ const COLUMN_CONFIG = {
 export const KanbanBoard = ({ 
   meetingId, 
   phases, 
+  tasks,
   onTaskUpdate, 
   onTaskCreate, 
   onTaskDelete 
 }: KanbanBoardProps) => {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [selectedPhase, setSelectedPhase] = useState<string>('');
   const [draggedTask, setDraggedTask] = useState<Task | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const { toast } = useToast();
 
   // Group tasks by status
   const tasksByStatus = {
@@ -41,28 +39,6 @@ export const KanbanBoard = ({
     'in-progress': tasks.filter(task => task.status === 'in-progress'),
     'done': tasks.filter(task => task.status === 'done'),
   };
-
-  // Load tasks from API
-  useEffect(() => {
-    const loadTasks = async () => {
-      try {
-        const response = await fetch(`/api/tasks?meetingId=${meetingId}`);
-        if (response.ok) {
-          const data = await response.json();
-          setTasks(data.tasks || []);
-        }
-      } catch (error) {
-        console.error('Failed to load tasks:', error);
-        toast({
-          title: "Error",
-          description: "Failed to load tasks",
-          variant: "destructive",
-        });
-      }
-    };
-
-    loadTasks();
-  }, [meetingId, toast]);
 
   const handleDragStart = (e: React.DragEvent, task: Task) => {
     setDraggedTask(task);
@@ -79,13 +55,6 @@ export const KanbanBoard = ({
     
     if (draggedTask && draggedTask.status !== status) {
       onTaskUpdate(draggedTask.id, { status: status as Task['status'] });
-      
-      // Update local state
-      setTasks(prev => prev.map(task => 
-        task.id === draggedTask.id 
-          ? { ...task, status: status as Task['status'] }
-          : task
-      ));
     }
     
     setDraggedTask(null);
@@ -93,77 +62,15 @@ export const KanbanBoard = ({
 
   const handleTaskUpdate = (taskId: string, updates: Partial<Task>) => {
     onTaskUpdate(taskId, updates);
-    
-    // Update local state
-    setTasks(prev => prev.map(task => 
-      task.id === taskId 
-        ? { ...task, ...updates }
-        : task
-    ));
   };
 
   const handleTaskCreate = async (taskData: Omit<Task, 'id' | 'createdAt' | 'updatedAt'>) => {
-    try {
-      const response = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(taskData),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const newTask = data.task;
-        
-        // Add to local state
-        setTasks(prev => [...prev, newTask]);
-        
-        // Show AI subtask suggestions if available
-        if (data.aiSubtaskSuggestions && data.aiSubtaskSuggestions.length > 0) {
-          toast({
-            title: "AI Suggestions Available",
-            description: `${data.aiSubtaskSuggestions.length} subtask suggestions generated. Check the task details to add them.`,
-          });
-        }
-        
-        setIsCreateDialogOpen(false);
-        toast({
-          title: "Success",
-          description: "Task created successfully",
-        });
-      }
-    } catch (error) {
-      console.error('Failed to create task:', error);
-      toast({
-        title: "Error",
-        description: "Failed to create task",
-        variant: "destructive",
-      });
-    }
+    onTaskCreate(taskData);
+    setIsCreateDialogOpen(false);
   };
 
   const handleTaskDelete = async (taskId: string) => {
-    try {
-      const response = await fetch(`/api/tasks?taskId=${taskId}`, {
-        method: 'DELETE',
-      });
-
-      if (response.ok) {
-        // Remove from local state
-        setTasks(prev => prev.filter(task => task.id !== taskId));
-        onTaskDelete(taskId);
-        toast({
-          title: "Success",
-          description: "Task deleted successfully",
-        });
-      }
-    } catch (error) {
-      console.error('Failed to delete task:', error);
-      toast({
-        title: "Error",
-        description: "Failed to delete task",
-        variant: "destructive",
-      });
-    }
+    onTaskDelete(taskId);
   };
 
   const getPhaseName = (phaseId: string) => {

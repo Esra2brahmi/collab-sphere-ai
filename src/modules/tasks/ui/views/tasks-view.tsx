@@ -19,13 +19,15 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
   const [phases, setPhases] = useState<ProjectPhase[]>([]);
   const [suggestedAssignees, setSuggestedAssignees] = useState<any[]>([]);
   const [workloadAnalysis, setWorkloadAnalysis] = useState<any>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const { toast } = useToast();
 
-  // Load existing AI project plan
+  // Load existing AI project plan and tasks
   useEffect(() => {
     loadExistingPlan();
+    loadTasks();
   }, [meetingId]);
 
   const loadExistingPlan = async () => {
@@ -33,15 +35,31 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
       const response = await fetch(`/api/ai-project-plan?meetingId=${meetingId}`);
       if (response.ok) {
         const data = await response.json();
+        console.log('Loaded AI project plan data:', data);
+        
         setAiProjectPlan(data.projectPlan);
         setPhases(data.phases || []);
         setSuggestedAssignees(data.suggestedAssignees || []);
         setWorkloadAnalysis(data.workloadAnalysis || null);
+      } else {
+        console.log('No existing plan found, will need to generate one');
       }
     } catch (error) {
       console.error('Failed to load existing plan:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const loadTasks = async () => {
+    try {
+      const response = await fetch(`/api/tasks?meetingId=${meetingId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setTasks(data.tasks || []);
+      }
+    } catch (error) {
+      console.error('Failed to load tasks:', error);
     }
   };
 
@@ -90,6 +108,13 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
       });
 
       if (response.ok) {
+        // Update local state
+        setTasks(prev => prev.map(task => 
+          task.id === taskId 
+            ? { ...task, ...updates }
+            : task
+        ));
+        
         toast({
           title: "Success",
           description: "Task updated successfully",
@@ -114,6 +139,12 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
       });
 
       if (response.ok) {
+        const data = await response.json();
+        const newTask = data.task;
+        
+        // Add to local state
+        setTasks(prev => [...prev, newTask]);
+        
         toast({
           title: "Success",
           description: "Task created successfully",
@@ -136,6 +167,9 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
       });
 
       if (response.ok) {
+        // Remove from local state
+        setTasks(prev => prev.filter(task => task.id !== taskId));
+        
         toast({
           title: "Success",
           description: "Task deleted successfully",
@@ -291,13 +325,17 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
 
         <TabsContent value="kanban" className="space-y-4">
           {phases.length > 0 ? (
-            <KanbanBoard
-              meetingId={meetingId}
-              phases={phases}
-              onTaskUpdate={handleTaskUpdate}
-              onTaskCreate={handleTaskCreate}
-              onTaskDelete={handleTaskDelete}
-            />
+            <>
+              {console.log('Rendering Kanban board with phases:', phases)}
+              <KanbanBoard
+                meetingId={meetingId}
+                phases={phases}
+                tasks={tasks}
+                onTaskUpdate={handleTaskUpdate}
+                onTaskCreate={handleTaskCreate}
+                onTaskDelete={handleTaskDelete}
+              />
+            </>
           ) : (
             <div className="text-center py-12">
               <Sparkles className="h-12 w-12 text-gray-400 mx-auto mb-4" />

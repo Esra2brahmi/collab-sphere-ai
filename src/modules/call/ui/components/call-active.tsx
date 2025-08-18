@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { CustomSpeakerLayout } from "./custom-speaker-layout";
 import { authClient } from "@/lib/auth-client";
+import { useToast } from "@/hooks/use-toast";
 
 interface Props {
     onLeave: () => void;
@@ -42,6 +43,7 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
     const participants = useParticipants();
     const call = useCall();
     const { data: session } = authClient.useSession();
+    const { toast } = useToast();
     const [isListening, setIsListening] = useState(false);
     const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
     const [isAIMuted, setIsAIMuted] = useState(false);
@@ -62,12 +64,142 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
     const accountUserId = session?.user?.id as string | undefined;
     const accountUserName = session?.user?.name as string | undefined;
     const [participantNames, setParticipantNames] = useState<string[]>([]);
+    const audioRef = useRef<HTMLAudioElement | null>(null);
+    const ttsModeRef = useRef<"neural" | "browser" | null>(null);
+    const lockedVoiceNameRef = useRef<string | null>(null);
+    const voicesReadyRef = useRef<boolean>(false);
+    const FORCE_NEURAL_ONLY = false;
+    const FORCE_BROWSER_ONLY = true;
+
+    // Ensure browser voices are loaded before using speechSynthesis
+    const ensureVoicesLoaded = async (): Promise<void> => {
+        if (voicesReadyRef.current) return;
+        return new Promise<void>((resolve) => {
+            const voices = window.speechSynthesis?.getVoices?.() || [];
+            if (voices.length > 0) {
+                voicesReadyRef.current = true;
+                resolve();
+                return;
+            }
+            const onVoices = () => {
+                const list = window.speechSynthesis?.getVoices?.() || [];
+                if (list.length > 0) {
+                    voicesReadyRef.current = true;
+                    window.speechSynthesis.removeEventListener('voiceschanged', onVoices);
+                    resolve();
+                }
+            };
+            window.speechSynthesis?.addEventListener('voiceschanged', onVoices);
+            // Fallback timeout
+            setTimeout(() => {
+                window.speechSynthesis?.removeEventListener('voiceschanged', onVoices);
+                voicesReadyRef.current = true; // proceed anyway
+                resolve();
+            }, 1500);
+        });
+    };
+
+    const playNeuralTTS = async (text: string): Promise<boolean> => {
+        try {
+            const avail = await fetch('/api/tts', { method: 'GET' }).then(r => r.json()).catch(() => ({ available: false }));
+            if (!avail?.available) return false;
+            const resp = await fetch('/api/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text }),
+            });
+            if (!resp.ok) {
+                try {
+                    const msg = await resp.text();
+                    console.warn('[TTS] Neural response not OK:', resp.status, msg);
+                } catch {}
+                return false;
+            }
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            if (!audioRef.current) {
+                audioRef.current = new Audio();
+            }
+            const audio = audioRef.current;
+            audio.src = url;
+            await audio.play().catch(() => { URL.revokeObjectURL(url); });
+            return true;
+        } catch (e) {
+            console.warn('[TTS] Neural request failed:', e);
+            return false;
+        }
+    };
+
+    // Play a sequence of phrases via neural TTS, one request per phrase
+    const playNeuralTTSPhrases = async (phrases: string[]): Promise<{ playedAny: boolean; quotaExceeded: boolean }> => {
+        const avail = await fetch('/api/tts', { method: 'GET' }).then(r => r.json()).catch(() => ({ available: false }));
+        if (!avail?.available) return { playedAny: false, quotaExceeded: false };
+        if (!audioRef.current) audioRef.current = new Audio();
+        const audio = audioRef.current;
+        let playedAny = false;
+        let quotaExceeded = false;
+
+        for (let i = 0; i < phrases.length; i++) {
+            if (ttsStopRequestedRef.current || isShuttingDownRef.current || isAIMuted || quotaExceeded) break;
+            const p = phrases[i];
+            // ElevenLabs can fail on long payloads; keep phrase <= 300 chars to be safe
+            const subparts = splitByMaxLength(p, 300);
+            for (const sub of subparts) {
+                if (ttsStopRequestedRef.current || isShuttingDownRef.current || isAIMuted || quotaExceeded) break;
+                const resp = await fetch('/api/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: sub }),
+                });
+                if (!resp.ok) {
+                    try { 
+                        const raw = await resp.text();
+                        console.warn('[TTS] Phrase synth failed:', resp.status, raw);
+                        if (raw.includes('quota_exceeded')) {
+                            quotaExceeded = true;
+                            break;
+                        }
+                    } catch {}
+                    continue; // skip this subpart but continue with others
+                }
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                audio.src = url;
+                try {
+                    await audio.play();
+                    playedAny = true;
+                    await new Promise<void>((resolve) => {
+                        const handler = () => {
+                            audio.removeEventListener('ended', handler);
+                            resolve();
+                        };
+                        audio.addEventListener('ended', handler);
+                    });
+                } catch (e) {
+                    console.warn('[TTS] Playback error:', e);
+                } finally {
+                    URL.revokeObjectURL(url);
+                }
+                // small natural pause between phrase parts
+                await new Promise(r => setTimeout(r, 120));
+            }
+            // slightly longer pause between original phrases
+            await new Promise(r => setTimeout(r, 160));
+        }
+
+        return { playedAny, quotaExceeded };
+    };
 
     const forceStopTTS = () => {
         try {
             // Cancel all speech synthesis
             window.speechSynthesis?.cancel();
-            
+            // Stop any neural TTS playback
+            if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.currentTime = 0;
+                audioRef.current.src = '';
+            }
             // Pause and resume to ensure complete stop
             window.speechSynthesis?.pause();
             window.speechSynthesis?.resume();
@@ -81,6 +213,10 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
                 window.speechSynthesis?.pause();
                 window.speechSynthesis?.resume();
                 window.speechSynthesis?.cancel();
+                if (audioRef.current) {
+                    audioRef.current.pause();
+                    audioRef.current.currentTime = 0;
+                }
             } catch {}
         }, delay);
         
@@ -422,12 +558,61 @@ const splitTextIntoChunks = (text: string, maxLen = 220): string[] => {
     return chunks;
 };
 
+// Further split a chunk into short phrases to introduce natural pauses
+const splitIntoPhrases = (text: string): string[] => {
+    // Split on commas, semicolons, dashes, and keep sentence boundaries
+    const parts = text
+        .split(/(?<=[,;:])\s+|\s+—\s+|\s+-\s+/)
+        .map(p => p.trim())
+        .filter(Boolean);
+    return parts.length > 0 ? parts : [text];
+};
+
+// Split long text into smaller pieces by max length preserving words
+const splitByMaxLength = (text: string, maxLen: number): string[] => {
+    const result: string[] = [];
+    let remaining = text.trim();
+    while (remaining.length > maxLen) {
+        // try to split at last space before maxLen
+        let idx = remaining.lastIndexOf(' ', maxLen);
+        if (idx < 40) idx = maxLen; // fall back to hard split if no good space
+        result.push(remaining.slice(0, idx).trim());
+        remaining = remaining.slice(idx).trim();
+    }
+    if (remaining) result.push(remaining);
+    return result;
+};
+
+// Sanitize AI text for TTS: remove markdown (**, *, _, `), links, stray asterisks, and normalize whitespace
+const sanitizeForTTS = (input: string): string => {
+    if (!input) return '';
+    let out = input;
+    // Replace bullets/newlines with sentences
+    out = out.replace(/\r?\n|\r/g, ' ');
+    out = out.replace(/\s*[\-•]\s+/g, ' ');
+    // Markdown bold/italic
+    out = out.replace(/\*\*(.*?)\*\*/g, '$1');
+    out = out.replace(/\*(.*?)\*/g, '$1');
+    out = out.replace(/_(.*?)_/g, '$1');
+    // Inline/code blocks
+    out = out.replace(/`{1,3}([\s\S]*?)`{1,3}/g, '$1');
+    // Markdown links [text](url) -> text
+    out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
+    // Remove any remaining asterisks
+    out = out.replace(/\*/g, '');
+    // Collapse multiple dots
+    out = out.replace(/\.\.\.+/g, '…');
+    // Normalize spaces
+    out = out.replace(/\s+/g, ' ').trim();
+    return out;
+};
+
 // Text-to-speech for agent responses
 const speakResponse = async (text: string) => {
     if (!text) return;
-    if (!('speechSynthesis' in window) || isAIMuted) return;
+    if (isAIMuted) return; // allow neural even if speechSynthesis is unavailable
     if (isShuttingDownRef.current) return;
-    // Append to conversation log and sync AI chunk
+    // Append to conversation log and sync AI chunk (keep original text for logs/transcript)
     if (!ttsStopRequestedRef.current) {
         conversationLogRef.current.push(`AI: ${text}`);
         try {
@@ -467,20 +652,147 @@ const speakResponse = async (text: string) => {
         } catch (_) {}
     }
 
-    window.speechSynthesis.cancel();
+    // Reset stop flag
     ttsStopRequestedRef.current = false;
 
-    const chunks = splitTextIntoChunks(text);
-    if (chunks.length === 0) return;
+    const spokenText = sanitizeForTTS(text);
+
+    // Force browser-only mode
+    if (FORCE_BROWSER_ONLY) {
+        ttsModeRef.current = 'browser';
+    }
+
+    // FORCE neural-only: always attempt neural, never fall back
+    if (FORCE_NEURAL_ONLY) {
+        // Build phrase queue for robustness and natural pacing
+        const sentenceChunks = splitTextIntoChunks(spokenText);
+        const phraseQueue = sentenceChunks.flatMap(chunk => splitIntoPhrases(chunk));
+        setIsAgentSpeaking(true);
+        const { playedAny, quotaExceeded } = await playNeuralTTSPhrases(phraseQueue);
+        setIsAgentSpeaking(false);
+        if (playedAny) {
+            if (
+                recognitionRef.current &&
+                recognitionPausedByTTSRef.current &&
+                !isShuttingDownRef.current &&
+                !ttsStopRequestedRef.current &&
+                call?.microphone.enabled &&
+                !isAIListeningDisabled
+            ) {
+                try { recognitionRef.current.start(); setIsListening(true); } catch { setIsListening(false); }
+                finally { recognitionPausedByTTSRef.current = false; }
+            }
+        }
+        if (quotaExceeded) {
+            toast({
+                title: 'Neural TTS quota reached',
+                description: 'Your ElevenLabs quota is exceeded. The assistant will display text without speaking.',
+                variant: 'destructive',
+            });
+        } else if (!playedAny) {
+            console.warn('[TTS] Neural-only mode: synthesis failed, skipping speech');
+        }
+        return;
+    }
+
+    // Decide and lock TTS mode on first use
+    if (!ttsModeRef.current) {
+        const ok = await playNeuralTTS(spokenText);
+        if (ok) {
+            ttsModeRef.current = 'neural';
+            setIsAgentSpeaking(true);
+            const onEnded = () => {
+                setIsAgentSpeaking(false);
+                // Resume STT if we paused it AND mic is still enabled
+                if (
+                    recognitionRef.current &&
+                    recognitionPausedByTTSRef.current &&
+                    !isShuttingDownRef.current &&
+                    !ttsStopRequestedRef.current &&
+                    call?.microphone.enabled &&
+                    !isAIListeningDisabled
+                ) {
+                    try {
+                        recognitionRef.current.start();
+                        setIsListening(true);
+                    } catch (e) {
+                        console.error('Failed to resume recognition after TTS:', e);
+                        setIsListening(false);
+                    } finally {
+                        recognitionPausedByTTSRef.current = false;
+                    }
+                }
+                audioRef.current?.removeEventListener('ended', onEnded);
+            };
+            audioRef.current?.addEventListener('ended', onEnded);
+            return;
+        }
+        // Lock to browser mode if neural unavailable
+        ttsModeRef.current = 'browser';
+    }
+
+    if (ttsModeRef.current === 'neural') {
+        // Always stick to neural; if it fails, do not fallback to avoid voice change
+        const ok = await playNeuralTTS(spokenText);
+        if (ok) {
+            setIsAgentSpeaking(true);
+            const onEnded = () => {
+                setIsAgentSpeaking(false);
+                if (
+                    recognitionRef.current &&
+                    recognitionPausedByTTSRef.current &&
+                    !isShuttingDownRef.current &&
+                    !ttsStopRequestedRef.current &&
+                    call?.microphone.enabled &&
+                    !isAIListeningDisabled
+                ) {
+                    try { recognitionRef.current.start(); setIsListening(true); } catch { setIsListening(false); }
+                    finally { recognitionPausedByTTSRef.current = false; }
+                }
+                audioRef.current?.removeEventListener('ended', onEnded);
+            };
+            audioRef.current?.addEventListener('ended', onEnded);
+        } else {
+            console.warn('[TTS] Neural voice unavailable; skipping fallback to keep voice consistent.');
+        }
+        return;
+    }
+
+    // Browser TTS path (locked)
+    if (!('speechSynthesis' in window)) {
+        console.warn('[TTS] Browser speechSynthesis not available');
+        return;
+    }
+
+    await ensureVoicesLoaded();
+
+    const sentenceChunks = splitTextIntoChunks(spokenText);
+    const phraseQueue = sentenceChunks.flatMap(chunk => splitIntoPhrases(chunk));
+    if (phraseQueue.length === 0) return;
 
     setIsAgentSpeaking(true);
 
-    const speakChunkAt = (index: number) => {
+    const pickBetterDefaultVoice = () => {
+        const voices = window.speechSynthesis.getVoices();
+        const preferredNames = [
+            'Microsoft Aria Online (Natural) - English (United States)',
+            'Google US English',
+            'Samantha', 'Victoria', 'Moira', 'Karen',
+        ];
+        for (const name of preferredNames) {
+            const v = voices.find(voice => voice.name.includes(name));
+            if (v) return v;
+        }
+        const enUS = voices.find(v => /en[-_]?US/i.test(v.lang));
+        return enUS || voices[0];
+    };
+
+    const speakPhraseAt = (index: number) => {
         if (isShuttingDownRef.current || ttsStopRequestedRef.current || isAIMuted) {
             setIsAgentSpeaking(false);
             return;
         }
-        if (index >= chunks.length) {
+        if (index >= phraseQueue.length) {
             setIsAgentSpeaking(false);
             // Resume STT if we paused it AND mic is still enabled
             if (
@@ -508,24 +820,46 @@ const speakResponse = async (text: string) => {
             setIsAgentSpeaking(false);
             return;
         }
-        const utterance = new SpeechSynthesisUtterance(chunks[index]);
+
+        const phrase = phraseQueue[index];
+        const utterance = new SpeechSynthesisUtterance(phrase);
         
-        // Set voice if selected
-        if (selectedVoice !== "default") {
-            const voices = window.speechSynthesis.getVoices();
-            const selectedVoiceObj = voices.find(voice => voice.name === selectedVoice);
-            if (selectedVoiceObj) {
-                utterance.voice = selectedVoiceObj;
+        // Set voice (locked across session)
+        const voices = window.speechSynthesis.getVoices();
+        let voiceToUse: SpeechSynthesisVoice | undefined;
+        if (lockedVoiceNameRef.current) {
+            voiceToUse = voices.find(v => v.name === lockedVoiceNameRef.current);
+        }
+        if (!voiceToUse) {
+            if (selectedVoice && selectedVoice !== 'default') {
+                voiceToUse = voices.find(v => v.name === selectedVoice);
             }
         }
+        if (!voiceToUse) {
+            voiceToUse = pickBetterDefaultVoice();
+        }
+        if (voiceToUse) {
+            utterance.voice = voiceToUse;
+            if (!lockedVoiceNameRef.current) lockedVoiceNameRef.current = voiceToUse.name;
+        }
         
-        utterance.rate = 0.95;
-        utterance.pitch = 1.05;
-        utterance.volume = 0.85;
+        // Slight natural variation per phrase
+        const isQuestion = /\?\s*$/.test(phrase);
+        const baseRate = 0.88;
+        const basePitch = 1.0;
+        const rateJitter = (Math.random() * 0.06) - 0.03; // ±0.03
+        const pitchJitter = (Math.random() * 0.06) - 0.03; // ±0.03
+        utterance.rate = Math.max(0.8, Math.min(1.05, baseRate + rateJitter));
+        utterance.pitch = Math.max(0.9, Math.min(1.1, basePitch + pitchJitter + (isQuestion ? 0.04 : 0)));
+        utterance.volume = 1.0;
 
         utterance.onend = () => {
             if (!isShuttingDownRef.current && !ttsStopRequestedRef.current && !isAIMuted) {
-                speakChunkAt(index + 1);
+                // Natural pause: longer at sentence ends, shorter at commas/phrases
+                const lastChar = phrase.trim().slice(-1);
+                const isSentenceEnd = /[.!?…]/.test(lastChar);
+                const pauseMs = isSentenceEnd ? 300 + Math.random() * 120 : 160 + Math.random() * 80;
+                setTimeout(() => speakPhraseAt(index + 1), pauseMs);
             } else {
                 setIsAgentSpeaking(false);
             }
@@ -533,7 +867,7 @@ const speakResponse = async (text: string) => {
         utterance.onerror = (event) => {
             console.error('Speech synthesis error:', event);
             if (!isShuttingDownRef.current && !ttsStopRequestedRef.current && !isAIMuted) {
-                speakChunkAt(index + 1);
+                setTimeout(() => speakPhraseAt(index + 1), 80);
             } else {
                 setIsAgentSpeaking(false);
             }
@@ -542,7 +876,7 @@ const speakResponse = async (text: string) => {
         window.speechSynthesis.speak(utterance);
     };
 
-    speakChunkAt(0);
+    speakPhraseAt(0);
 };
 
 // Greet on user gesture
