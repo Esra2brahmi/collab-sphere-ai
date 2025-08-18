@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Task, Subtask, AITaskSuggestion } from "../../types";
+import { useState, useEffect } from "react";
+import { Task, Subtask, AITaskSuggestion, ProjectPhase } from "../../types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 
 interface TaskCardProps {
   task: Task;
+  phases: ProjectPhase[];
   phaseName: string;
   phaseColor: string;
   onUpdate: (taskId: string, updates: Partial<Task>) => void;
@@ -29,7 +30,8 @@ const PRIORITY_COLORS = {
 };
 
 export const TaskCard = ({ 
-  task, 
+  task,
+  phases,
   phaseName, 
   phaseColor, 
   onUpdate, 
@@ -43,30 +45,16 @@ export const TaskCard = ({
   const [aiSubtaskSuggestions, setAiSubtaskSuggestions] = useState<AITaskSuggestion[]>([]);
   const { toast } = useToast();
 
-  const handleUpdate = async () => {
-    try {
-      const response = await fetch('/api/tasks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editData),
-      });
-
-      if (response.ok) {
-        onUpdate(task.id, editData);
-        setIsEditDialogOpen(false);
-        toast({
-          title: "Success",
-          description: "Task updated successfully",
-        });
-      }
-    } catch (error) {
-      console.error('Failed to update task:', error);
-      toast({
-        title: "Error",
-        description: "Failed to update task",
-        variant: "destructive",
-      });
+  // When opening the edit dialog, sync edit state to the latest task values
+  useEffect(() => {
+    if (isEditDialogOpen) {
+      setEditData(task);
     }
+  }, [isEditDialogOpen, task]);
+
+  const handleUpdate = () => {
+    onUpdate(task.id, editData);
+    setIsEditDialogOpen(false);
   };
 
   const handleAddSubtask = async () => {
@@ -161,8 +149,9 @@ export const TaskCard = ({
     return new Date(date).toLocaleDateString();
   };
 
-  const completedSubtasks = task.subtasks.filter(s => s.completed).length;
-  const totalSubtasks = task.subtasks.length;
+  const safeSubtasks: Subtask[] = Array.isArray(task.subtasks) ? task.subtasks : [];
+  const completedSubtasks = safeSubtasks.filter((s) => s.completed).length;
+  const totalSubtasks = safeSubtasks.length;
 
   return (
     <>
@@ -307,7 +296,27 @@ export const TaskCard = ({
               />
             </div>
             
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="phase">Phase</Label>
+                <select
+                  id="phase"
+                  className="w-full border rounded-md h-10 px-3 bg-white"
+                  value={editData.phase}
+                  onChange={(e) => {
+                    console.log('Phase selector changed:', { selectedValue: e.target.value, selectedText: e.target.options[e.target.selectedIndex].text });
+                    setEditData({ ...editData, phase: e.target.value });
+                  }}
+                >
+                  <option value="" disabled>Select phase</option>
+                  {phases.map((p) => {
+                    console.log('Rendering phase option:', { id: p.id, name: p.name });
+                    return (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    );
+                  })}
+                </select>
+              </div>
               <div>
                 <Label htmlFor="priority">Priority</Label>
                 <Select

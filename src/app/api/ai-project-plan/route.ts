@@ -374,10 +374,17 @@ export async function GET(request: NextRequest) {
             );
         }
 
+        // Get phases from the projectPhases table (which have proper IDs) instead of JSON
+        const phases = await db
+            .select()
+            .from(projectPhases)
+            .where(eq(projectPhases.meetingId, meetingId))
+            .orderBy(projectPhases.order);
+
         return NextResponse.json({
             success: true,
             projectPlan: existingPlan,
-            phases: JSON.parse(existingPlan.phases),
+            phases: phases,
             suggestedAssignees: JSON.parse(existingPlan.suggestedAssignees),
             workloadAnalysis: JSON.parse(existingPlan.workloadAnalysis),
         });

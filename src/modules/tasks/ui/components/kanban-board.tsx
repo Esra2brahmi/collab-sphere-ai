@@ -74,7 +74,13 @@ export const KanbanBoard = ({
   };
 
   const getPhaseName = (phaseId: string) => {
+    console.log('getPhaseName called with:', { 
+      phaseId, 
+      phaseIdType: typeof phaseId,
+      availablePhases: phases.map(p => ({ id: p.id, name: p.name, idType: typeof p.id })) 
+    });
     const phase = phases.find(p => p.id === phaseId);
+    console.log('Found phase:', phase);
     return phase?.name || 'Unknown Phase';
   };
 
@@ -129,6 +135,7 @@ export const KanbanBoard = ({
                 <TaskCard
                   key={task.id}
                   task={task}
+                  phases={phases}
                   phaseName={getPhaseName(task.phase)}
                   phaseColor={getPhaseColor(task.phase)}
                   onUpdate={handleTaskUpdate}

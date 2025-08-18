@@ -68,6 +68,7 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
     const ttsModeRef = useRef<"neural" | "browser" | null>(null);
     const lockedVoiceNameRef = useRef<string | null>(null);
     const voicesReadyRef = useRef<boolean>(false);
+    // ElevenLabs quota hit: stick to browser TTS for reliability
     const FORCE_NEURAL_ONLY = false;
     const FORCE_BROWSER_ONLY = true;
 
@@ -122,6 +123,13 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
             }
             const audio = audioRef.current;
             audio.src = url;
+            // Play slightly faster while preserving natural pitch
+            try {
+                (audio as any).preservesPitch = true;
+                (audio as any).mozPreservesPitch = true;
+                (audio as any).webkitPreservesPitch = true;
+            } catch {}
+            audio.playbackRate = 1.08;
             await audio.play().catch(() => { URL.revokeObjectURL(url); });
             return true;
         } catch (e) {
@@ -136,6 +144,13 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
         if (!avail?.available) return { playedAny: false, quotaExceeded: false };
         if (!audioRef.current) audioRef.current = new Audio();
         const audio = audioRef.current;
+        // Apply once; browsers keep this for subsequent plays
+        try {
+            (audio as any).preservesPitch = true;
+            (audio as any).mozPreservesPitch = true;
+            (audio as any).webkitPreservesPitch = true;
+        } catch {}
+        audio.playbackRate = 1.08;
         let playedAny = false;
         let quotaExceeded = false;
 
@@ -180,11 +195,11 @@ export const CallActive = ({ onLeave, meetingId, meetingName, agentId }: Props) 
                 } finally {
                     URL.revokeObjectURL(url);
                 }
-                // small natural pause between phrase parts
-                await new Promise(r => setTimeout(r, 120));
+                // small natural pause between phrase parts (slightly faster)
+                await new Promise(r => setTimeout(r, 90));
             }
-            // slightly longer pause between original phrases
-            await new Promise(r => setTimeout(r, 160));
+            // slightly longer pause between original phrases (slightly faster)
+            await new Promise(r => setTimeout(r, 120));
         }
 
         return { playedAny, quotaExceeded };
@@ -774,15 +789,21 @@ const speakResponse = async (text: string) => {
 
     const pickBetterDefaultVoice = () => {
         const voices = window.speechSynthesis.getVoices();
+        // Prefer natural/neural voices where available
         const preferredNames = [
-            'Microsoft Aria Online (Natural) - English (United States)',
+            'Microsoft Aria Online (Natural)',
+            'Microsoft Jenny',
+            'Microsoft Guy',
             'Google US English',
+            'Google UK English Female',
             'Samantha', 'Victoria', 'Moira', 'Karen',
+            'Alloy', 'Verse', 'Bright', // Some vendors expose these labels
         ];
         for (const name of preferredNames) {
-            const v = voices.find(voice => voice.name.includes(name));
+            const v = voices.find(voice => voice.name.toLowerCase().includes(name.toLowerCase()));
             if (v) return v;
         }
+        // Otherwise pick any en-US voice, then fallback to first
         const enUS = voices.find(v => /en[-_]?US/i.test(v.lang));
         return enUS || voices[0];
     };
@@ -841,16 +862,22 @@ const speakResponse = async (text: string) => {
         if (voiceToUse) {
             utterance.voice = voiceToUse;
             if (!lockedVoiceNameRef.current) lockedVoiceNameRef.current = voiceToUse.name;
+            // Align language with the selected voice when available
+            if (voiceToUse.lang) {
+                utterance.lang = voiceToUse.lang;
+            }
         }
         
         // Slight natural variation per phrase
         const isQuestion = /\?\s*$/.test(phrase);
-        const baseRate = 0.88;
-        const basePitch = 1.0;
+        // Noticeably faster default speaking rate, still natural
+        const baseRate = 1.18;
+        const basePitch = 0.98;
         const rateJitter = (Math.random() * 0.06) - 0.03; // ±0.03
-        const pitchJitter = (Math.random() * 0.06) - 0.03; // ±0.03
-        utterance.rate = Math.max(0.8, Math.min(1.05, baseRate + rateJitter));
-        utterance.pitch = Math.max(0.9, Math.min(1.1, basePitch + pitchJitter + (isQuestion ? 0.04 : 0)));
+        const pitchJitter = (Math.random() * 0.08) - 0.04; // ±0.04
+        // Keep rate within a natural-sounding range but clearly faster
+        utterance.rate = Math.max(1.05, Math.min(1.35, baseRate + rateJitter));
+        utterance.pitch = Math.max(0.9, Math.min(1.15, basePitch + pitchJitter + (isQuestion ? 0.08 : 0)));
         utterance.volume = 1.0;
 
         utterance.onend = () => {
@@ -858,7 +885,8 @@ const speakResponse = async (text: string) => {
                 // Natural pause: longer at sentence ends, shorter at commas/phrases
                 const lastChar = phrase.trim().slice(-1);
                 const isSentenceEnd = /[.!?…]/.test(lastChar);
-                const pauseMs = isSentenceEnd ? 300 + Math.random() * 120 : 160 + Math.random() * 80;
+                // Further reduced pauses to feel more responsive
+                const pauseMs = isSentenceEnd ? 160 + Math.random() * 80 : 80 + Math.random() * 50;
                 setTimeout(() => speakPhraseAt(index + 1), pauseMs);
             } else {
                 setIsAgentSpeaking(false);

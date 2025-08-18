@@ -100,6 +100,7 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
   };
 
   const handleTaskUpdate = async (taskId: string, updates: Partial<Task>) => {
+    console.log('handleTaskUpdate called with:', { taskId, updates });
     try {
       const response = await fetch('/api/tasks', {
         method: 'PUT',
@@ -108,12 +109,16 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
       });
 
       if (response.ok) {
-        // Update local state
-        setTasks(prev => prev.map(task => 
-          task.id === taskId 
-            ? { ...task, ...updates }
-            : task
-        ));
+        // Prefer server response to reflect any backend normalization (e.g., phase validation)
+        const data = await response.json();
+        const updatedTask: Task = data.task;
+        console.log('Server returned updated task:', updatedTask);
+        setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
+        // Also re-fetch tasks and phases from server to ensure complete consistency
+        await Promise.all([
+          loadTasks(),
+          loadExistingPlan(),
+        ]);
         
         toast({
           title: "Success",
@@ -326,7 +331,7 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
         <TabsContent value="kanban" className="space-y-4">
           {phases.length > 0 ? (
             <>
-              {console.log('Rendering Kanban board with phases:', phases)}
+              {console.log('Rendering Kanban board with phases:', phases.map(p => ({ id: p.id, name: p.name, fullPhase: p })))}
               <KanbanBoard
                 meetingId={meetingId}
                 phases={phases}
@@ -383,9 +388,9 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
                                   {task.estimatedHours}h
                                 </Badge>
                               )}
-                              {task.suggestedAssignee && (
+                              {((task as any)?.suggestedAssignee) && (
                                 <Badge variant="outline" className="text-xs">
-                                  {task.suggestedAssignee}
+                                  {(task as any).suggestedAssignee}
                                 </Badge>
                               )}
                             </div>
@@ -442,7 +447,7 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
                         <div className="pt-2">
                           <div className="text-sm font-medium mb-2">Expertise:</div>
                           <div className="flex flex-wrap gap-1">
-                            {assignee.expertise.map((skill, skillIndex) => (
+                            {assignee.expertise.map((skill: string, skillIndex: number) => (
                               <Badge key={skillIndex} variant="secondary" className="text-xs">
                                 {skill}
                               </Badge>

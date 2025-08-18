@@ -107,6 +107,40 @@ export async function POST(request: NextRequest) {
             assignee = userData?.name;
         }
 
+        // Resolve a valid phase for this meeting
+        async function getOrCreateDefaultPhase(meetingId: string) {
+            const existing = await db
+                .select()
+                .from(projectPhases)
+                .where(eq(projectPhases.meetingId, meetingId))
+                .orderBy(projectPhases.order)
+                .limit(1);
+            if (existing.length > 0) return existing[0];
+            // Create a default phase if none exist
+            const [created] = await db.insert(projectPhases).values({
+                name: "Project Planning & Setup",
+                order: 1,
+                color: "#8B5CF6",
+                meetingId,
+            }).returning();
+            return created;
+        }
+
+        async function resolvePhaseId(meetingId: string, requestedPhaseId?: string) {
+            if (requestedPhaseId) {
+                const found = await db
+                    .select({ id: projectPhases.id })
+                    .from(projectPhases)
+                    .where(and(eq(projectPhases.meetingId, meetingId), eq(projectPhases.id, requestedPhaseId)))
+                    .limit(1);
+                if (found.length > 0) return requestedPhaseId;
+            }
+            const defPhase = await getOrCreateDefaultPhase(meetingId);
+            return defPhase.id;
+        }
+
+        const phaseId = await resolvePhaseId(meetingId, phase);
+
         // Create the task
         const [newTask] = await db
             .insert(tasks)
@@ -114,7 +148,7 @@ export async function POST(request: NextRequest) {
                 id: nanoid(),
                 title,
                 description,
-                phase,
+                phase: phaseId,
                 assignee,
                 assigneeId,
                 priority: priority || "medium",
@@ -166,11 +200,97 @@ export async function PUT(request: NextRequest) {
             updateData.assignee = userData?.name;
         }
 
+        // Load existing task to know meeting context and current phase
+        const [existingTask] = await db
+            .select({ id: tasks.id, meetingId: tasks.meetingId, phase: tasks.phase })
+            .from(tasks)
+            .where(eq(tasks.id, id))
+            .limit(1);
+        if (!existingTask) {
+            return NextResponse.json({ error: "Task not found" }, { status: 404 });
+        }
+
+        // Normalize types to avoid serialization errors (e.g., toISOString on non-Date)
+        const normalizedUpdates: any = { ...updateData };
+
+        // dueDate: allow string | number | Date | null -> Date | null
+        if (Object.prototype.hasOwnProperty.call(normalizedUpdates, 'dueDate')) {
+            const v = normalizedUpdates.dueDate;
+            if (!v) {
+                normalizedUpdates.dueDate = null;
+            } else {
+                const d = new Date(v);
+                normalizedUpdates.dueDate = isNaN(d.getTime()) ? null : d;
+            }
+        }
+
+        // estimatedHours: coerce to number or null
+        if (Object.prototype.hasOwnProperty.call(normalizedUpdates, 'estimatedHours')) {
+            const n = Number(normalizedUpdates.estimatedHours);
+            normalizedUpdates.estimatedHours = Number.isFinite(n) ? n : null;
+        }
+
+        // tags: ensure array of strings
+        if (Object.prototype.hasOwnProperty.call(normalizedUpdates, 'tags')) {
+            const t = normalizedUpdates.tags;
+            if (Array.isArray(t)) {
+                normalizedUpdates.tags = t.map(String);
+            } else if (typeof t === 'string') {
+                try {
+                    const parsed = JSON.parse(t);
+                    normalizedUpdates.tags = Array.isArray(parsed) ? parsed.map(String) : [];
+                } catch {
+                    normalizedUpdates.tags = [];
+                }
+            } else if (t == null) {
+                normalizedUpdates.tags = [];
+            }
+        }
+
+        // Prevent accidental overwrite of immutable fields
+        delete normalizedUpdates.id;
+        delete normalizedUpdates.createdAt;
+
+        // Ensure phase is valid for this meeting. If an invalid phase is provided, auto-heal to a default phase.
+        async function getOrCreateDefaultPhase(meetingId: string) {
+            const existing = await db
+                .select()
+                .from(projectPhases)
+                .where(eq(projectPhases.meetingId, meetingId))
+                .orderBy(projectPhases.order)
+                .limit(1);
+            if (existing.length > 0) return existing[0];
+            const [created] = await db.insert(projectPhases).values({
+                name: "Project Planning & Setup",
+                order: 1,
+                color: "#8B5CF6",
+                meetingId,
+            }).returning();
+            return created;
+        }
+
+        async function ensureValidPhase(meetingId: string, requestedPhaseId?: string, currentPhaseId?: string) {
+            const candidate = requestedPhaseId ?? currentPhaseId;
+            if (candidate) {
+                const found = await db
+                    .select({ id: projectPhases.id })
+                    .from(projectPhases)
+                    .where(and(eq(projectPhases.meetingId, meetingId), eq(projectPhases.id, candidate)))
+                    .limit(1);
+                if (found.length > 0) return candidate;
+            }
+            const def = await getOrCreateDefaultPhase(meetingId);
+            return def.id;
+        }
+
+        const finalPhaseId = await ensureValidPhase(existingTask.meetingId, normalizedUpdates.phase, existingTask.phase);
+        normalizedUpdates.phase = finalPhaseId;
+
         // Update the task
         const [updatedTask] = await db
             .update(tasks)
             .set({
-                ...updateData,
+                ...normalizedUpdates,
                 updatedAt: new Date(),
             })
             .where(eq(tasks.id, id))
