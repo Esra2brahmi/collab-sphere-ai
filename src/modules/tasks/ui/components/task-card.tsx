@@ -118,21 +118,19 @@ export const TaskCard = ({
 
   const handleGetAISuggestions = async () => {
     try {
-      const response = await fetch('/api/tasks', {
+      const response = await fetch('/api/ai-subtasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: task.title,
           description: task.description,
-          phase: task.phase,
-          meetingId: task.meetingId,
         }),
       });
 
       if (response.ok) {
         const data = await response.json();
-        if (data.aiSubtaskSuggestions) {
-          setAiSubtaskSuggestions(data.aiSubtaskSuggestions);
+        if (Array.isArray(data.suggestions)) {
+          setAiSubtaskSuggestions(data.suggestions);
         }
       }
     } catch (error) {
@@ -152,6 +150,8 @@ export const TaskCard = ({
   const safeSubtasks: Subtask[] = Array.isArray(task.subtasks) ? task.subtasks : [];
   const completedSubtasks = safeSubtasks.filter((s) => s.completed).length;
   const totalSubtasks = safeSubtasks.length;
+  
+  // Due date helpers removed; showing due date only in content section
 
   return (
     <>
@@ -180,6 +180,7 @@ export const TaskCard = ({
                 >
                   {task.priority}
                 </Badge>
+                {/* Due date next to badges removed as requested */}
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -229,6 +230,26 @@ export const TaskCard = ({
               <div className="flex items-center gap-2 text-xs text-gray-600">
                 <Calendar className="h-3 w-3" />
                 <span>{formatDate(task.dueDate)}</span>
+              </div>
+            )}
+            
+            {/* Subtasks List */}
+            {task.subtasks && task.subtasks.length > 0 && (
+              <div className="mt-3 space-y-1">
+                {task.subtasks.map((s) => (
+                  <div key={s.id} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      className="h-3 w-3"
+                      checked={!!s.completed}
+                      onChange={() => handleToggleSubtask(s.id)}
+                      aria-label={`Toggle subtask ${s.title}`}
+                    />
+                    <span className={s.completed ? "line-through text-gray-400" : "text-gray-700"}>
+                      {s.title}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
             
