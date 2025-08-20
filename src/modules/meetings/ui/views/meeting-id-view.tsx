@@ -111,6 +111,69 @@ export const MeetingIdView = ({meetingId} : Props)=>{
       | undefined,
     [insights]);
 
+    // Normalize helper for robust name comparisons
+    const norm = useCallback((s: string) => s.trim().toLowerCase(), []);
+
+    // Allowed names = real team participants from DB/API, excluding the meeting agent (AI assistant)
+    const allowedParticipantNames = useMemo(() => {
+      const agentName = (data.agent?.name ?? 'AI Agent');
+      const agentNorm = norm(agentName);
+      // store normalized names for comparisons
+      const set = new Set<string>();
+      for (const n of participantNames) {
+        if (!n) continue;
+        const nn = norm(n);
+        if (nn === agentNorm) continue; // exclude agent if present in participants API
+        // exclude generic AI/bot labels
+        if (nn === 'ai' || nn === 'ai agent' || nn.includes('assistant') || nn.includes('bot')) continue;
+        set.add(nn);
+      }
+      return set;
+    }, [participantNames, data.agent?.name, norm]);
+
+    // Filtered expertise map: show only real team participants
+    const filteredExpertise = useMemo(() => {
+      if (!expertise) return undefined;
+      const agentName = (data.agent?.name ?? 'AI Agent');
+      const agentNorm = norm(agentName);
+      const entries = Object.entries(expertise).filter(([user]) => {
+        const u = norm(user);
+        // If we don't yet have participants, still exclude obvious AI/bot/agent
+        const heuristicAI = u === agentNorm || u === 'ai' || u === 'ai agent' || u.includes('assistant') || u.includes('bot');
+        if (heuristicAI) return false;
+        return allowedParticipantNames.size > 0 ? allowedParticipantNames.has(u) : true;
+      });
+      return Object.fromEntries(entries) as Record<string, Record<string, number>>;
+    }, [expertise, allowedParticipantNames, data.agent?.name, norm]);
+
+    // Filtered role suggestions: show only real team participants
+    const filteredRoleSuggestions = useMemo(() => {
+      const list = Array.isArray(insights?.role_suggestions) ? insights!.role_suggestions : [];
+      const agentName = (data.agent?.name ?? 'AI Agent');
+      const agentNorm = norm(agentName);
+      return list.filter((s) => {
+        const u = norm(s.user);
+        const heuristicAI = u === agentNorm || u === 'ai' || u === 'ai agent' || u.includes('assistant') || u.includes('bot');
+        if (heuristicAI) return false;
+        return allowedParticipantNames.size > 0 ? allowedParticipantNames.has(u) : true;
+      });
+    }, [insights?.role_suggestions, allowedParticipantNames, data.agent?.name, norm]);
+
+    // Filtered per-participant sentiment
+    const filteredSentimentParticipants = useMemo(() => {
+      const parts = insights?.sentiment_analysis?.participants ?? undefined;
+      if (!parts) return undefined;
+      const agentName = (data.agent?.name ?? 'AI Agent');
+      const agentNorm = norm(agentName);
+      const entries = Object.entries(parts).filter(([name]) => {
+        const u = norm(name);
+        const heuristicAI = u === agentNorm || u === 'ai' || u === 'ai agent' || u.includes('assistant') || u.includes('bot');
+        if (heuristicAI) return false;
+        return allowedParticipantNames.size > 0 ? allowedParticipantNames.has(u) : true;
+      });
+      return Object.fromEntries(entries) as Record<string, { avg_sentiment: number; confidence_level?: number }>;
+    }, [insights?.sentiment_analysis?.participants, allowedParticipantNames, data.agent?.name, norm]);
+
     // Actions: download insights JSON and copy summary
     const handleDownloadInsights = useCallback(() => {
       const payload = parsedSummary ? parsedSummary : null;
@@ -312,11 +375,11 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                                 </ul>
                               )}
                               {/* Per-participant sentiment if available */}
-                              {insights.sentiment_analysis?.participants && (
+                              {filteredSentimentParticipants && Object.keys(filteredSentimentParticipants).length > 0 && (
                                 <div className="mt-3">
                                   <div className="text-sm font-medium mb-1">Per‑participant</div>
                                   <div className="flex flex-col gap-2">
-                                    {Object.entries(insights.sentiment_analysis.participants as Record<string, { avg_sentiment: number; confidence_level?: number }>).map(([name, s]) => (
+                                    {Object.entries(filteredSentimentParticipants as Record<string, { avg_sentiment: number; confidence_level?: number }>).map(([name, s]) => (
                                       <div key={name} className="flex items-center gap-2 text-sm">
                                         <span className="w-32 truncate" title={name}>{name}</span>
                                         <div className="flex-1 h-2 bg-muted rounded">
@@ -333,9 +396,9 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                             {/* Expertise */}
                             <div className="rounded-lg border p-4">
                               <div className="font-medium mb-2">Detected Expertise</div>
-                              {expertise && Object.keys(expertise).length > 0 ? (
+                              {filteredExpertise && Object.keys(filteredExpertise).length > 0 ? (
                                 <div className="flex flex-col gap-3 text-sm">
-                                  {Object.entries(expertise as Record<string, Record<string, number>>).map(([user, skills]) => (
+                                  {Object.entries(filteredExpertise as Record<string, Record<string, number>>).map(([user, skills]) => (
                                     <div key={user}>
                                       <div className="font-medium">{user}</div>
                                       <div className="flex flex-col gap-2 mt-2">
@@ -360,9 +423,9 @@ export const MeetingIdView = ({meetingId} : Props)=>{
                             {/* Role suggestions */}
                             <div className="rounded-lg border p-4">
                               <div className="font-medium mb-2">Role Suggestions</div>
-                              {Array.isArray(insights.role_suggestions) && insights.role_suggestions.length > 0 ? (
+                              {Array.isArray(filteredRoleSuggestions) && filteredRoleSuggestions.length > 0 ? (
                                 <div className="flex flex-col gap-2 text-sm">
-                                  {insights.role_suggestions.map((s: InsightsRoleSuggestion, i: number) => (
+                                  {filteredRoleSuggestions.map((s: InsightsRoleSuggestion, i: number) => (
                                     <div key={i} className="flex flex-col gap-2 border rounded px-2 py-2">
                                       <div className="flex items-center justify-between gap-2">
                                         <div className="font-medium">{s.role}</div>
