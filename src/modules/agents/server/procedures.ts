@@ -1,6 +1,6 @@
 import { createTRPCRouter,baseProcedure, protectedProcedure } from "@/trpc/init";
 import {db} from "@/db";
-import { agents } from "@/db/schema";
+import { agents, meetings } from "@/db/schema";
 import { TRPCError } from "@trpc/server";
 import { agentsInsertSchema } from "../schemas";
 import z from "zod";
@@ -52,15 +52,18 @@ export const agentsRouter=createTRPCRouter({
     getOne: protectedProcedure.input(z.object({id:z.string()})).query(async({input,ctx})=>{
         const [existingAgent]=await db
            .select({
-            meetingCount: sql<number>`5`,
+            meetingCount: count(meetings.id),
             ...getTableColumns(agents),
            })
            .from(agents)
+           .leftJoin(meetings, eq(meetings.agentId, agents.id))
            .where(
             and (
-                (eq(agents.id,input.id)),
+                eq(agents.id,input.id),
                 eq(agents.userId, ctx.auth.user.id),
-        ));
+            )
+           )
+           .groupBy(agents.id);
 
         if(!existingAgent){
             throw new TRPCError({
@@ -81,10 +84,11 @@ export const agentsRouter=createTRPCRouter({
         const {search ,page, pageSize}=input;
         const data=await db
            .select({
-            meetingCount: sql<number>`5`,
+            meetingCount: count(meetings.id),
             ...getTableColumns(agents),
            })
            .from(agents)
+           .leftJoin(meetings, eq(meetings.agentId, agents.id))
            .where(
             and(
                 eq(agents.userId, ctx.auth.user.id),
@@ -92,6 +96,7 @@ export const agentsRouter=createTRPCRouter({
                 
             )
            )
+           .groupBy(agents.id)
            .orderBy(desc(agents.createdAt),desc(agents.id))
            .limit(pageSize)
            .offset((page-1)*pageSize)
