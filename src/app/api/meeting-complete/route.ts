@@ -295,12 +295,22 @@ export async function POST(req: NextRequest) {
       insights,
     };
 
+    // Ensure startedAt is set for proper duration calculation post-call
+    const [existing] = await db
+      .select()
+      .from(meetings)
+      .where(eq(meetings.id, meetingId));
+
+    const startedAtValue = existing?.startedAt ?? existing?.createdAt ?? new Date();
+
     // Save as JSON string in summary for backward compatibility
     await db.update(meetings)
       .set({
         summary: JSON.stringify(payload),
         status: "completed",
         endedAt: new Date(),
+        // backfill startedAt if it was missing
+        startedAt: startedAtValue,
         updatedAt: new Date(),
       })
       .where(eq(meetings.id, meetingId));

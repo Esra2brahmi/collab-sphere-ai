@@ -28,10 +28,26 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Get conversation transcript
-        const transcriptResponse = await fetch(`${request.nextUrl.origin}/api/conversation-sync?meetingId=${meetingId}&format=joined`);
-        const transcriptData = await transcriptResponse.json();
-        const transcript = transcriptData.transcript || "";
+        // Prefer meeting summary (clearer) over raw transcript
+        let summaryTextFromMeeting = "";
+        try {
+            if (meeting.summary) {
+                const parsed = typeof meeting.summary === 'string' ? JSON.parse(meeting.summary) : meeting.summary;
+                summaryTextFromMeeting = parsed?.summaryText || "";
+            }
+        } catch (e) {
+            console.warn('[ai-project-plan] Failed to parse meeting.summary JSON, will fall back to transcript');
+        }
+
+        let sourceUsed: 'summary' | 'transcript' = 'summary';
+        let sourceText = summaryTextFromMeeting?.trim() || "";
+        if (!sourceText) {
+            // Fallback: Get conversation transcript
+            const transcriptResponse = await fetch(`${request.nextUrl.origin}/api/conversation-sync?meetingId=${meetingId}&format=joined`);
+            const transcriptData = await transcriptResponse.json();
+            sourceText = transcriptData.transcript || "";
+            sourceUsed = 'transcript';
+        }
 
         // Generate AI project plan using Groq with improved prompt
         const aiResponse = await fetch(`${request.nextUrl.origin}/api/groq-chat`, {
@@ -40,10 +56,10 @@ export async function POST(request: NextRequest) {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                message: `You are an expert project manager. Analyze this meeting transcript and create a detailed, actionable project plan.
+                message: `You are an expert project manager. Analyze this meeting content and create a detailed, actionable project plan.
 
 MEETING: ${meeting.name}
-TRANSCRIPT: ${transcript}
+${sourceUsed === 'summary' ? 'SUMMARY' : 'TRANSCRIPT'}: ${sourceText}
 
 Based on the conversation, create a structured project plan with:
 
@@ -103,7 +119,7 @@ Format your response as a valid JSON object exactly like this:
   }
 }
 
-Ensure the JSON is valid and all fields are properly filled based on the actual conversation content.`,
+Ensure the JSON is valid and all fields are properly filled based on the actual ${sourceUsed}. Use ONLY items that appear in the provided ${sourceUsed}.`,
                 agentId: meeting.agentId,
             }),
         });
@@ -113,32 +129,63 @@ Ensure the JSON is valid and all fields are properly filled based on the actual 
         }
 
         const aiData = await aiResponse.json();
-        let projectPlanData;
+        let projectPlanData: any;
+        let fallbackUsed = false;
+
+        // Helper: try to safely extract a JSON object from the model response
+        const safeParseProjectPlan = (raw: string) => {
+            if (!raw) return { data: null as any, error: new Error("Empty AI response") };
+            const trimmed = String(raw).trim();
+            // Try direct JSON first
+            try {
+                return { data: JSON.parse(trimmed), error: null };
+            } catch {}
+            // Try fenced code block ```json ... ```
+            const fenceMatch = trimmed.match(/```json\s*([\s\S]*?)```/i) || trimmed.match(/```\s*([\s\S]*?)```/i);
+            if (fenceMatch?.[1]) {
+                try {
+                    return { data: JSON.parse(fenceMatch[1].trim()), error: null };
+                } catch {}
+            }
+            // Fallback: take substring from first { to last }
+            const first = trimmed.indexOf("{");
+            const last = trimmed.lastIndexOf("}");
+            if (first !== -1 && last !== -1 && last > first) {
+                const candidate = trimmed.slice(first, last + 1);
+                try {
+                    return { data: JSON.parse(candidate), error: null };
+                } catch (e) {
+                    return { data: null as any, error: e as Error };
+                }
+            }
+            return { data: null as any, error: new Error("No JSON object found in AI response") };
+        };
 
         try {
             // Try to parse the AI response as JSON
-            projectPlanData = JSON.parse(aiData.response);
-            
+            const { data, error } = safeParseProjectPlan(aiData.response);
+            if (error || !data) {
+                throw error || new Error('Unable to parse AI response');
+            }
+            projectPlanData = data;
             // Validate the parsed data
             if (!projectPlanData.phases || !Array.isArray(projectPlanData.phases)) {
                 throw new Error('Invalid phases data');
             }
-            
             // Ensure each phase has a proper name and tasks
             projectPlanData.phases = projectPlanData.phases.map((phase: any, index: number) => ({
                 ...phase,
-                name: phase.name || `Phase ${index + 1}`,
-                order: phase.order || index + 1,
-                color: phase.color || "#3B82F6",
+                name: typeof phase.name === 'string' && phase.name.trim() ? phase.name : `Phase ${index + 1}`,
+                order: typeof phase.order === 'number' ? phase.order : index + 1,
+                color: typeof phase.color === 'string' && phase.color.trim() ? phase.color : "#3B82F6",
                 tasks: Array.isArray(phase.tasks) ? phase.tasks : []
             }));
-            
         } catch (parseError) {
-            console.error('AI response parsing failed:', parseError);
-            console.log('Raw AI response:', aiData.response);
-            
+            console.error('[ai-project-plan] AI response parsing failed:', parseError);
+            console.log('[ai-project-plan] Raw AI response:', aiData?.response);
             // Create a more intelligent fallback based on the transcript content
-            projectPlanData = createFallbackPlan(transcript, meeting.name);
+            projectPlanData = createFallbackPlan(sourceText, meeting.name);
+            fallbackUsed = true;
         }
 
         // Save the AI project plan
@@ -203,6 +250,8 @@ Ensure the JSON is valid and all fields are properly filled based on the actual 
             phases: projectPlanData.phases,
             suggestedAssignees: projectPlanData.suggestedAssignees,
             workloadAnalysis: projectPlanData.workloadAnalysis,
+            fallbackUsed,
+            sourceUsed,
         });
 
     } catch (error) {

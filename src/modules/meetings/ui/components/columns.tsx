@@ -1,6 +1,7 @@
 "use client"
 
 import { ColumnDef } from "@tanstack/react-table"
+import { useEffect, useState } from "react"
 import { GeneratedAvatar } from "@/components/generated-avatar"
 import { CircleCheckIcon, CircleXIcon, ClockArrowUpIcon, ClockFadingIcon, CornerDownRightIcon, CornerRightDownIcon, LoaderIcon, VideoIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -17,6 +18,16 @@ function formatDuration(seconds:number){
     units: ["h", "m", "s"],
   });
 };
+
+function LiveDuration({ start }: { start: Date }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const seconds = Math.max(0, Math.floor((now - start.getTime()) / 1000));
+  return <>{formatDuration(seconds)}</>;
+}
 
 const statusIconMap = {
   upcoming: ClockArrowUpIcon,
@@ -91,20 +102,34 @@ export const columns: ColumnDef<MeetingGetMany[number] >[]= [
     accessorKey:"duration",
     header: "duration",
     cell:({row}) => {
-      return(
-      <Badge
-        variant="outline"
-        className="capitalize [&>svg]:size-4 flex items-center gap-x-2"
-      >
-        <ClockFadingIcon className="text-blue-700"/>
-        {row.original.duration ? formatDuration(row.original.duration) : "No duration"}
-      </Badge>
+      const startedAt = row.original.startedAt ? new Date(row.original.startedAt) : null;
+      const endedAt = row.original.endedAt ? new Date(row.original.endedAt) : null;
+      let seconds: number | null = null;
+
+      if (row.original.status === "active" && startedAt) {
+        // Live ticking duration
+        return (
+          <Badge variant="outline" className="capitalize [&>svg]:size-4 flex items-center gap-x-2">
+            <ClockFadingIcon className="text-blue-700"/>
+            <LiveDuration start={startedAt} />
+          </Badge>
+        );
+      }
+
+      if (row.original.duration != null) {
+        seconds = row.original.duration;
+      } else if (startedAt && endedAt) {
+        seconds = Math.max(0, Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000));
+      }
+
+      return (
+        <Badge variant="outline" className="capitalize [&>svg]:size-4 flex items-center gap-x-2">
+          <ClockFadingIcon className="text-blue-700"/>
+          {seconds != null ? formatDuration(seconds) : "—"}
+        </Badge>
       );
-    
     }
   
   }
 
 ]
-
-

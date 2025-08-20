@@ -22,6 +22,8 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [sourceUsed, setSourceUsed] = useState<"summary" | "transcript" | "unknown" | null>(null);
+  const [fallbackUsed, setFallbackUsed] = useState<boolean>(false);
   const { toast } = useToast();
 
   // Load existing AI project plan and tasks
@@ -41,6 +43,13 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
         setPhases(data.phases || []);
         setSuggestedAssignees(data.suggestedAssignees || []);
         setWorkloadAnalysis(data.workloadAnalysis || null);
+        // If backend starts returning these, capture them; else default
+        if (typeof data.sourceUsed === 'string') {
+          setSourceUsed((data.sourceUsed === 'summary' || data.sourceUsed === 'transcript') ? data.sourceUsed : 'unknown');
+        } else {
+          setSourceUsed('unknown');
+        }
+        setFallbackUsed(Boolean(data.fallbackUsed));
       } else {
         console.log('No existing plan found, will need to generate one');
       }
@@ -79,10 +88,12 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
         setPhases(data.phases || []);
         setSuggestedAssignees(data.suggestedAssignees || []);
         setWorkloadAnalysis(data.workloadAnalysis || null);
+        setSourceUsed((data.sourceUsed === 'summary' || data.sourceUsed === 'transcript') ? data.sourceUsed : 'unknown');
+        setFallbackUsed(Boolean(data.fallbackUsed));
         
         toast({
           title: "Success",
-          description: "AI project plan generated successfully!",
+          description: `AI project plan generated from ${data.sourceUsed || 'unknown'}${data.fallbackUsed ? ' (fallback used)' : ''}.`,
         });
       } else {
         throw new Error('Failed to generate project plan');
@@ -231,6 +242,16 @@ export const TasksView = ({ meetingId }: TasksViewProps) => {
             <CardTitle className="flex items-center gap-2">
               <Sparkles className="h-5 w-5 text-blue-600" />
               AI-Generated Project Plan
+              {sourceUsed && (
+                <Badge variant="outline" className="ml-2 text-xs">
+                  Based on {sourceUsed}
+                </Badge>
+              )}
+              {fallbackUsed && (
+                <Badge variant="destructive" className="ml-1 text-xs">
+                  Fallback
+                </Badge>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent>
