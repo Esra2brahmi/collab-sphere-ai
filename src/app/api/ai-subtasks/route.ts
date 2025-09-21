@@ -28,7 +28,7 @@ Keep subtasks specific, actionable, and realistic in scope.`;
 
     // Call Groq directly to generate suggestions
     const completion = await groq.chat.completions.create({
-      model: "llama3-8b-8192",
+      model: "llama-3.3-70b-versatile",
       messages: [
         { role: "system", content: "You are a helpful assistant that returns valid JSON only when asked to output JSON." },
         { role: "user", content: prompt },

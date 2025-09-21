@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
             { role: "user", content: message },
         ];
 
-        const model = "llama3-8b-8192"; // Free Groq model
+        const model = "llama-3.3-70b-versatile"; // Free Groq model
         const maxTokensInitial = 1024;
         const maxTokensContinue = 768;
         const maxContinuations = 3;

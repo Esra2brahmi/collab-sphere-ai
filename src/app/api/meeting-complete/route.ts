@@ -73,7 +73,7 @@ async function generateSummary(conversation: string): Promise<string> {
           { role: "system", content: "You are an assistant that writes concise meeting summaries. Keep it under 120 words. Use bullet points only if necessary." },
           { role: "user", content: `Summarize this conversation succinctly so someone who missed it can catch up quickly.\n\nConversation:\n${trimmed}` },
         ],
-        model: "llama3-8b-8192",
+        model: "llama-3.3-70b-versatile",
         temperature: 0.3,
         max_tokens: 240,
       });
@@ -139,7 +139,7 @@ async function generateInsights(conversation: string, participants?: string[]): 
             "Return JSON only."
           ].join("\n") },
         ],
-        model: "llama3-8b-8192",
+        model: "llama-3.3-70b-versatile",
         temperature: 0.2,
         max_tokens: 400,
       });
